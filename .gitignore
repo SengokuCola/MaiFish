@@ -11,6 +11,7 @@ ENV/
 
 # Environment variables
 .env
+mcp_config.json
 
 # IDE
 .vscode/
