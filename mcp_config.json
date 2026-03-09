@@ -1,0 +1,13 @@
+{
+    "mcpServers": {
+        "tavily": {
+            "command": "npx",
+            "args": [
+                "-y",
+                "mcp-remote",
+                "https://mcp.tavily.com/mcp/?tavilyApiKey=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"
+            ],
+            "env": {}
+        }
+    }
+}
