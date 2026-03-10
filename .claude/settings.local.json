@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git rm sub_agent.py)",
+      "Bash(ls -1 *.py)"
+    ]
+  }
+}

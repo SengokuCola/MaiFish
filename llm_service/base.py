@@ -73,18 +73,6 @@ class BaseLLMService(ABC):
         ...
 
     @abstractmethod
-    async def analyze_for_memory(
-        self, messages: List[dict],
-    ) -> List[dict]:
-        """
-        分析一段对话记录，返回需要创建的子代理描述列表。
-
-        Returns:
-            [{"description": "...", "summary": "..."}, ...]
-        """
-        ...
-
-    @abstractmethod
     async def analyze_timing(
         self, chat_history: List[dict], timing_info: str,
     ) -> str:
@@ -117,18 +105,6 @@ class BaseLLMService(ABC):
         Returns:
             情绪分析文本
         """
-        ...
-
-    @abstractmethod
-    async def create_sub_agent_summary(
-        self, chat_history: List[dict], memory_description: str,
-    ) -> str:
-        """根据记忆描述，对主对话上下文进行总结，作为子代理的初始上下文。"""
-        ...
-
-    @abstractmethod
-    async def sub_agent_check(self, sub_agent_history: List[dict]) -> ChatResponse:
-        """执行子代理检查，返回包含文本和/或 offer_info 工具调用的响应。"""
         ...
 
     @abstractmethod

@@ -15,13 +15,9 @@ DEFAULT_CHAT_SYSTEM_PROMPT = (
     "  如果用户在等待期间说了话，你会通过工具返回结果收到内容。\n"
     "  如果超时没有回复，你也会收到超时通知。\n"
     "• stop() — 结束当前对话循环，进入待机状态，直到用户下次输入新内容时再唤醒你。\n"
-    "• create_table(name, columns, rows, note) — 创建/更新一个表格，用于存储结构化信息。\n"
-    "  可以用来记录待办事项、知识点、用户偏好、收藏列表等任意内容。\n"
-    "• list_tables() — 列出所有已创建的表格概要，了解当前有哪些表格。\n"
-    "• view_table(name) — 查看指定表格的完整内容。\n"
-    "\n"
-    "注意：系统会自动管理你的记忆。当对话较长时，较早的对话记录会被自动转化为\n"
-    "记忆子代理，它们会在后续对话中在需要时主动提醒你相关信息。\n"
+    "• write_file(filename, content) — 在 mai_files 目录下写入文件，支持任意格式。\n"
+    "• read_file(filename) — 读取 mai_files 目录下的文件内容。\n"
+    "• list_files() — 获取 mai_files 目录下所有文件的元信息列表。\n"
     "\n"
     "思考规则：你必须先进行内心思考，然后选择需要使用的工具，如果你想说话，必须使用say工具。\n"
     "只有使用say工具，你才能向用户说话。用户才能看到你的思考。\n"
@@ -101,72 +97,58 @@ CHAT_TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "create_table",
+            "name": "write_file",
             "description": (
-                "创建一个持久化表格来存储结构化信息。"
-                "表格可用于记录任意形式的内容（如待办事项、知识点、收藏等）。"
-                "如果同名表格已存在，会覆盖旧表格。"
+                "在 mai_files 目录下写入文件，支持任意格式（文本、代码、Markdown等）。"
+                "如果文件已存在，会覆盖原有内容。可用于保存笔记、代码片段、配置等。"
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "name": {
+                    "filename": {
                         "type": "string",
-                        "description": "表格名称，简洁明了，如「待办事项」「喜欢的歌」",
+                        "description": "文件名，可包含路径，如 'notes.txt' 或 'diary/2024-03-09.md'",
                     },
-                    "columns": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "列名列表，如 [\"任务\", \"优先级\", \"截止日期\"]",
-                    },
-                    "rows": {
-                        "type": "array",
-                        "items": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                        },
-                        "description": "数据行列表，每行是一个字符串数组，与 columns 对应",
-                    },
-                    "note": {
+                    "content": {
                         "type": "string",
-                        "description": "表格的注释或说明（可选）",
+                        "description": "要写入的文件内容",
                     },
                 },
-                "required": ["name", "columns", "rows"],
+                "required": ["filename", "content"],
             },
         },
     },
     {
         "type": "function",
         "function": {
-            "name": "list_tables",
+            "name": "read_file",
             "description": (
-                "列出当前所有已创建的表格。"
-                "返回每个表格的名称、列信息、行数和注释，帮助你了解有哪些表格可用。"
+                "读取 mai_files 目录下的文件内容。"
+                "返回文件的完整文本内容。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "filename": {
+                        "type": "string",
+                        "description": "要读取的文件名，可包含路径",
+                    },
+                },
+                "required": ["filename"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_files",
+            "description": (
+                "获取 mai_files 目录下所有文件的元信息列表。"
+                "返回每个文件的名称、大小、修改时间等信息，帮助你了解有哪些文件可用。"
             ),
             "parameters": {
                 "type": "object",
                 "properties": {},
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "view_table",
-            "description": (
-                "查看指定表格的完整内容。"
-                "返回表格的所有列名、数据行和注释。"
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "name": {
-                        "type": "string",
-                        "description": "要查看的表格名称",
-                    },
-                },
-                "required": ["name"],
             },
         },
     },
@@ -219,50 +201,3 @@ EQ_SYSTEM_PROMPT = (
     "- 如果信息太少无法判断，就说信息不足，给出初步印象\n"
     "- 直接输出分析结果，不要有格式标题"
 )
-
-# ──────────────────── 记忆子代理 Prompt ────────────────────
-
-MEMORY_ANALYSIS_PROMPT = (
-    "你是一个对话记忆分析助手。给定一段即将被移出上下文的对话记录，"
-    "请分析其中是否有值得长期记忆的信息。\n\n"
-    "要求：\n"
-    "1. 识别对话中的关键信息、重要话题、用户偏好、待办事项等\n"
-    "2. 将这些信息按领域分组，每个领域创建一个记忆条目\n"
-    "3. 每个条目包含：description（记忆领域描述）和 summary（从对话中提取的关键信息总结）\n"
-    "4. 如果对话内容没有值得记忆的信息，返回空数组\n\n"
-    "以 JSON 数组格式输出，例如：\n"
-    '[{"description": "用户的旅行计划", "summary": "用户计划下周三去杭州..."}, '
-    '{"description": "用户的工作项目", "summary": "用户正在开发一个..."}]\n\n'
-    "注意：只输出 JSON 数组，不要有其他文本。"
-)
-
-SUB_AGENT_INIT_PROMPT = (
-    "你是一个信息提取助手。给定一段对话历史和一个记忆描述，"
-    "请从对话中提取与该记忆描述相关的所有关键信息，形成简洁的总结。\n"
-    "只提取相关信息，不要添加无关内容。输出简洁的总结文本。"
-)
-
-SUB_AGENT_TOOLS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "offer_info",
-            "description": (
-                "向主 Agent 提供信息提示。"
-                "当你判断主对话中出现了与你负责的记忆领域相关的、"
-                "主 Agent 需要知道的信息时，使用此工具。"
-                "如果没有需要提供的信息，不要调用此工具。"
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "info": {
-                        "type": "string",
-                        "description": "需要提供给主 Agent 的信息内容，要简洁有针对性",
-                    }
-                },
-                "required": ["info"],
-            },
-        },
-    },
-]

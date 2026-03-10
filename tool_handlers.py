@@ -1,23 +1,28 @@
 """
 MaiDiary - 工具调用处理器
-处理 LLM 循环中各工具（say/wait/stop/create_table/list_tables/view_table/MCP）的执行逻辑。
+处理 LLM 循环中各工具（say/wait/stop/file/MCP）的执行逻辑。
 """
 
 import json as _json
 import asyncio
+import os
 from datetime import datetime
 from typing import TYPE_CHECKING, Optional
+from pathlib import Path
 
 from rich.panel import Panel
 from rich.markdown import Markdown
 
 from config import console
-from table import Table
 from input_reader import InputReader
 from llm_service import BaseLLMService
 
 if TYPE_CHECKING:
     from mcp_client import MCPManager
+
+
+# mai_files 目录路径
+MAI_FILES_DIR = Path(os.path.join(os.path.dirname(os.path.abspath(__file__)), "mai_files"))
 
 
 class ToolHandlerContext:
@@ -27,12 +32,10 @@ class ToolHandlerContext:
         self,
         llm_service: BaseLLMService,
         reader: InputReader,
-        tables: dict[str, Table],
         user_input_times: list[datetime],
     ):
         self.llm_service = llm_service
         self.reader = reader
-        self.tables = tables
         self.user_input_times = user_input_times
         self.last_user_input_time: Optional[datetime] = None
 
@@ -141,84 +144,6 @@ async def _do_wait(seconds: int, ctx: ToolHandlerContext) -> str:
     return f"用户说：{user_input}"
 
 
-async def handle_create_table(tc, chat_history: list, ctx: ToolHandlerContext):
-    """处理 create_table 工具。"""
-    tbl_name = tc.arguments.get("name", "未命名")
-    tbl_cols = tc.arguments.get("columns", [])
-    tbl_rows = tc.arguments.get("rows", [])
-    tbl_note = tc.arguments.get("note", "")
-    console.print(f"[accent]🔧 调用工具: create_table(\"{tbl_name}\")[/accent]")
-
-    table = Table(
-        name=tbl_name,
-        columns=tbl_cols,
-        rows=tbl_rows,
-        note=tbl_note,
-    )
-    ctx.tables[tbl_name] = table
-
-    console.print(
-        Panel(
-            table.to_display(),
-            title="📋 表格已创建",
-            border_style="green",
-            padding=(0, 1),
-        )
-    )
-    chat_history.append({
-        "role": "tool",
-        "tool_call_id": tc.id,
-        "content": f"表格「{tbl_name}」已创建，共 {len(tbl_cols)} 列 {len(tbl_rows)} 行。",
-    })
-
-
-async def handle_list_tables(tc, chat_history: list, ctx: ToolHandlerContext):
-    """处理 list_tables 工具。"""
-    console.print("[accent]🔧 调用工具: list_tables()[/accent]")
-    if ctx.tables:
-        summaries = [t.to_summary() for t in ctx.tables.values()]
-        result_text = f"当前共有 {len(ctx.tables)} 个表格：\n" + "\n".join(summaries)
-    else:
-        result_text = "当前没有任何表格。"
-    console.print(
-        Panel(
-            result_text,
-            title="📋 表格列表",
-            border_style="blue",
-            padding=(0, 1),
-        )
-    )
-    chat_history.append({
-        "role": "tool",
-        "tool_call_id": tc.id,
-        "content": result_text,
-    })
-
-
-async def handle_view_table(tc, chat_history: list, ctx: ToolHandlerContext):
-    """处理 view_table 工具。"""
-    view_name = tc.arguments.get("name", "")
-    console.print(f"[accent]🔧 调用工具: view_table(\"{view_name}\")[/accent]")
-    if view_name in ctx.tables:
-        result_text = ctx.tables[view_name].to_display()
-    else:
-        available = ", ".join(ctx.tables.keys()) if ctx.tables else "无"
-        result_text = f"表格「{view_name}」不存在。当前可用表格: {available}"
-    console.print(
-        Panel(
-            result_text,
-            title=f"📋 查看表格: {view_name}",
-            border_style="blue",
-            padding=(0, 1),
-        )
-    )
-    chat_history.append({
-        "role": "tool",
-        "tool_call_id": tc.id,
-        "content": result_text,
-    })
-
-
 async def handle_mcp_tool(tc, chat_history: list, mcp_manager: "MCPManager"):
     """
     处理 MCP 工具调用。
@@ -262,3 +187,168 @@ async def handle_unknown_tool(tc, chat_history: list):
         "tool_call_id": tc.id,
         "content": f"未知工具: {tc.name}",
     })
+
+
+async def handle_write_file(tc, chat_history: list):
+    """处理 write_file 工具：在 mai_files 目录下写入文件。"""
+    filename = tc.arguments.get("filename", "")
+    content = tc.arguments.get("content", "")
+    console.print(f"[accent]🔧 调用工具: write_file(\"{filename}\")[/accent]")
+
+    # 确保目录存在
+    MAI_FILES_DIR.mkdir(parents=True, exist_ok=True)
+
+    # 构建完整文件路径
+    file_path = MAI_FILES_DIR / filename
+
+    try:
+        # 创建父目录（如果需要）
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # 写入文件
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(content)
+
+        # 获取文件大小
+        file_size = file_path.stat().st_size
+
+        console.print(
+            Panel(
+                f"文件已写入: {filename}\n大小: {file_size} 字符",
+                title="📁 文件已保存",
+                border_style="green",
+                padding=(0, 1),
+            )
+        )
+
+        chat_history.append({
+            "role": "tool",
+            "tool_call_id": tc.id,
+            "content": f"文件「{filename}」已成功写入，共 {file_size} 个字符。",
+        })
+    except Exception as e:
+        error_msg = f"写入文件失败: {e}"
+        console.print(f"[error]{error_msg}[/error]")
+        chat_history.append({
+            "role": "tool",
+            "tool_call_id": tc.id,
+            "content": error_msg,
+        })
+
+
+async def handle_read_file(tc, chat_history: list):
+    """处理 read_file 工具：读取 mai_files 目录下的文件。"""
+    filename = tc.arguments.get("filename", "")
+    console.print(f"[accent]🔧 调用工具: read_file(\"{filename}\")[/accent]")
+
+    # 构建完整文件路径
+    file_path = MAI_FILES_DIR / filename
+
+    try:
+        if not file_path.exists():
+            error_msg = f"文件「{filename}」不存在。"
+            console.print(f"[warning]{error_msg}[/warning]")
+            chat_history.append({
+                "role": "tool",
+                "tool_call_id": tc.id,
+                "content": error_msg,
+            })
+            return
+
+        if not file_path.is_file():
+            error_msg = f"「{filename}」不是一个文件。"
+            console.print(f"[warning]{error_msg}[/warning]")
+            chat_history.append({
+                "role": "tool",
+                "tool_call_id": tc.id,
+                "content": error_msg,
+            })
+            return
+
+        # 读取文件内容
+        with open(file_path, "r", encoding="utf-8") as f:
+            file_content = f.read()
+
+        # 截断过长内容用于显示
+        display_content = file_content
+        if len(file_content) > 1000:
+            display_content = file_content[:1000] + "\n... (内容已截断)"
+
+        console.print(
+            Panel(
+                display_content,
+                title=f"📄 文件内容: {filename}",
+                border_style="blue",
+                padding=(0, 1),
+            )
+        )
+
+        chat_history.append({
+            "role": "tool",
+            "tool_call_id": tc.id,
+            "content": f"文件「{filename}」内容：\n{file_content}",
+        })
+    except Exception as e:
+        error_msg = f"读取文件失败: {e}"
+        console.print(f"[error]{error_msg}[/error]")
+        chat_history.append({
+            "role": "tool",
+            "tool_call_id": tc.id,
+            "content": error_msg,
+        })
+
+
+async def handle_list_files(tc, chat_history: list):
+    """处理 list_files 工具：获取 mai_files 目录下所有文件的元信息。"""
+    console.print("[accent]🔧 调用工具: list_files()[/accent]")
+
+    try:
+        # 确保目录存在
+        MAI_FILES_DIR.mkdir(parents=True, exist_ok=True)
+
+        # 获取所有文件
+        files_info = []
+        for item in MAI_FILES_DIR.rglob("*"):
+            if item.is_file():
+                # 获取相对路径
+                rel_path = item.relative_to(MAI_FILES_DIR)
+                stat = item.stat()
+                files_info.append({
+                    "name": str(rel_path),
+                    "size": stat.st_size,
+                    "modified": datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
+                })
+
+        if not files_info:
+            result_text = "mai_files 目录为空，没有任何文件。"
+        else:
+            # 按名称排序
+            files_info.sort(key=lambda x: x["name"])
+            # 格式化输出
+            lines = [f"📁 mai_files 目录下共有 {len(files_info)} 个文件:\n"]
+            for info in files_info:
+                lines.append(f"  • {info['name']} ({info['size']} 字节, 修改于 {info['modified']})")
+            result_text = "\n".join(lines)
+
+        console.print(
+            Panel(
+                result_text,
+                title="📁 文件列表",
+                border_style="cyan",
+                padding=(0, 1),
+            )
+        )
+
+        chat_history.append({
+            "role": "tool",
+            "tool_call_id": tc.id,
+            "content": result_text,
+        })
+    except Exception as e:
+        error_msg = f"获取文件列表失败: {e}"
+        console.print(f"[error]{error_msg}[/error]")
+        chat_history.append({
+            "role": "tool",
+            "tool_call_id": tc.id,
+            "content": error_msg,
+        })

@@ -13,10 +13,7 @@ from .prompts import (
     CHAT_TOOLS,
     DEFAULT_CHAT_SYSTEM_PROMPT,
     EQ_SYSTEM_PROMPT,
-    MEMORY_ANALYSIS_PROMPT,
     SAY_REWRITE_PROMPT,
-    SUB_AGENT_INIT_PROMPT,
-    SUB_AGENT_TOOLS,
     TIMING_SYSTEM_PROMPT,
 )
 from .utils import format_chat_history
@@ -213,12 +210,15 @@ class OpenAILLMService(BaseLLMService):
 
     async def analyze_emotion(self, chat_history: List[dict]) -> str:
         """情商模块：分析用户的情绪状态和言语态度。"""
-        formatted = format_chat_history(chat_history)
+        # 获取最近几轮对话（约 8-10 条消息，约 3-5 轮）
+        recent_messages = chat_history[-10:] if len(chat_history) > 10 else chat_history
+        formatted = format_chat_history(recent_messages)
+
         eq_messages = [
             {"role": "system", "content": EQ_SYSTEM_PROMPT},
             {
                 "role": "user",
-                "content": f"以下是当前对话记录，请分析其中用户的情绪状态和言语态度：\n\n{formatted}",
+                "content": f"以下是最近几轮对话记录，请分析其中用户的情绪状态和言语态度：\n\n{formatted}",
             },
         ]
         extra_body = self._build_extra_body()
@@ -232,89 +232,6 @@ class OpenAILLMService(BaseLLMService):
         )
 
         return response.choices[0].message.content or ""
-
-    # ──────── 子代理 (Sub-Agent) ────────
-
-    async def analyze_for_memory(self, messages: List[dict]) -> List[dict]:
-        """分析对话记录，返回需要创建的子代理描述列表。"""
-        formatted = format_chat_history(messages)
-        llm_messages = [
-            {"role": "system", "content": MEMORY_ANALYSIS_PROMPT},
-            {
-                "role": "user",
-                "content": f"以下是即将被移出上下文的对话记录：\n\n{formatted}",
-            },
-        ]
-        extra_body = self._build_extra_body()
-
-        response = await self._call_llm(
-            "记忆分析",
-            llm_messages,
-            temperature=self._temperature,
-            max_tokens=self._max_tokens,
-            **({"extra_body": extra_body} if extra_body else {}),
-        )
-
-        raw_text = response.choices[0].message.content or "[]"
-        # 尝试从响应中提取 JSON 数组
-        try:
-            text = raw_text.strip()
-            if text.startswith("```"):
-                text = text.split("\n", 1)[1] if "\n" in text else text[3:]
-                text = text.rsplit("```", 1)[0]
-            result = json.loads(text.strip())
-            if isinstance(result, list):
-                return result
-        except (json.JSONDecodeError, IndexError):
-            pass
-        return []
-
-    async def create_sub_agent_summary(
-        self, chat_history: List[dict], memory_description: str,
-    ) -> str:
-        """根据记忆描述，对主对话上下文进行总结，作为子代理的初始上下文。"""
-        formatted = format_chat_history(chat_history)
-        messages = [
-            {"role": "system", "content": SUB_AGENT_INIT_PROMPT},
-            {
-                "role": "user",
-                "content": (
-                    f"记忆描述：{memory_description}\n\n"
-                    f"对话历史：\n{formatted}\n\n"
-                    f"请提取与上述记忆描述相关的信息并总结。"
-                ),
-            },
-        ]
-        extra_body = self._build_extra_body()
-
-        response = await self._call_llm(
-            f"子代理初始化 ({memory_description[:30]})",
-            messages,
-            temperature=self._temperature,
-            max_tokens=self._max_tokens,
-            **({"extra_body": extra_body} if extra_body else {}),
-        )
-        return response.choices[0].message.content or ""
-
-    async def sub_agent_check(self, sub_agent_history: List[dict]) -> ChatResponse:
-        """执行子代理检查，返回包含思考和/或 offer_info 工具调用的响应。"""
-        extra_body = self._build_extra_body()
-
-        response = await self._call_llm(
-            "子代理检查",
-            sub_agent_history,
-            tools=SUB_AGENT_TOOLS,
-            temperature=self._temperature,
-            max_tokens=1024,
-            **({"extra_body": extra_body} if extra_body else {}),
-        )
-
-        msg = response.choices[0].message
-        return ChatResponse(
-            content=msg.content,
-            tool_calls=self._parse_tool_calls(msg),
-            raw_message=self._build_raw_message(msg),
-        )
 
     # ──────── 对话上下文构建 ────────
 

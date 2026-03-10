@@ -19,6 +19,8 @@ mcp_config.json
 *.swp
 *.swo
 
+mai_files
+
 # Database
 *.db
 
