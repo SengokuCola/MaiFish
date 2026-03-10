@@ -24,6 +24,9 @@ mai_files
 # Database
 *.db
 
+# Memory files
+mai_memory/
+
 # OS
 Thumbs.db
 Desktop.ini
