@@ -32,6 +32,9 @@ from tool_handlers import (
     handle_store_context,
     handle_mcp_tool,
     handle_unknown_tool,
+    handle_get_qq_chat_info,
+    handle_send_info,
+    handle_list_qq_chats,
 )
 
 
@@ -608,6 +611,15 @@ class BufferCLI:
 
                     elif tc.name == "store_context":
                         await handle_store_context(tc, chat_history, ctx)
+
+                    elif tc.name == "get_qq_chat_info":
+                        await handle_get_qq_chat_info(tc, chat_history)
+
+                    elif tc.name == "send_info":
+                        await handle_send_info(tc, chat_history)
+
+                    elif tc.name == "list_qq_chats":
+                        await handle_list_qq_chats(tc, chat_history)
 
                     elif self._mcp_manager and self._mcp_manager.is_mcp_tool(tc.name):
                         await handle_mcp_tool(tc, chat_history, self._mcp_manager)

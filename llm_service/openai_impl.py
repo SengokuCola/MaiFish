@@ -48,7 +48,7 @@ class OpenAILLMService(BaseLLMService):
 
         # 如果没有提供自定义提示词，则根据配置动态构建
         if chat_system_prompt is None:
-            from config import ENABLE_WRITE_FILE, ENABLE_READ_FILE, ENABLE_LIST_FILES
+            from config import ENABLE_WRITE_FILE, ENABLE_READ_FILE, ENABLE_LIST_FILES, ENABLE_QQ_TOOLS
 
             # 构建文件工具说明
             file_tools_parts = []
@@ -59,14 +59,28 @@ class OpenAILLMService(BaseLLMService):
             if ENABLE_LIST_FILES:
                 file_tools_parts.append("• list_files() — 获取 mai_files 目录下所有文件的元信息列表。")
 
-            # 如果有任何文件工具启用，添加前缀空行
-            if file_tools_parts:
-                file_tools_section = "\n" + "\n".join(file_tools_parts) + "\n"
-            else:
-                file_tools_section = ""
+            # 构建QQ工具说明
+            qq_tools_parts = []
+            if ENABLE_QQ_TOOLS:
+                qq_tools_parts.append("• get_qq_chat_info(chat, limit) — 获取指定 QQ 聊天的聊天记录。")
+                qq_tools_parts.append("• send_info(chat, message) — 发送消息到指定的 QQ 聊天。")
+                qq_tools_parts.append("• list_qq_chats() — 获取所有可用的 QQ 聊天列表。")
 
-            # 加载提示词模板并注入文件工具部分
-            self._chat_system_prompt = load_prompt("chat.system", file_tools_section=file_tools_section)
+            # 合并所有工具说明
+            tools_parts = []
+            if file_tools_parts:
+                tools_parts.extend(file_tools_parts)
+            if qq_tools_parts:
+                tools_parts.extend(qq_tools_parts)
+
+            # 如果有任何工具启用，添加前缀空行
+            if tools_parts:
+                tools_section = "\n" + "\n".join(tools_parts) + "\n"
+            else:
+                tools_section = ""
+
+            # 加载提示词模板并注入工具部分
+            self._chat_system_prompt = load_prompt("chat.system", file_tools_section=tools_section)
         else:
             self._chat_system_prompt = chat_system_prompt
 
@@ -151,13 +165,14 @@ class OpenAILLMService(BaseLLMService):
         extra_body = self._build_extra_body()
 
         # 延迟导入配置以避免循环导入
-        from config import ENABLE_WRITE_FILE, ENABLE_READ_FILE, ENABLE_LIST_FILES
+        from config import ENABLE_WRITE_FILE, ENABLE_READ_FILE, ENABLE_LIST_FILES, ENABLE_QQ_TOOLS
 
         # 获取根据配置启用的内置工具
         enabled_tools = get_enabled_chat_tools(
             enable_write_file=ENABLE_WRITE_FILE,
             enable_read_file=ENABLE_READ_FILE,
             enable_list_files=ENABLE_LIST_FILES,
+            enable_qq_tools=ENABLE_QQ_TOOLS,
         )
 
         # 合并内置工具与 MCP 等外部工具
