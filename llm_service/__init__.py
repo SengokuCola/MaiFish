@@ -1,5 +1,5 @@
 """
-MaiDiary - LLM 服务包
+MaiSaka - LLM 服务包
 提供抽象接口 (BaseLLMService) 和 OpenAI 兼容实现 (OpenAILLMService)。
 """
 

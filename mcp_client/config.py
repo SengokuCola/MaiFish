@@ -1,5 +1,5 @@
 """
-MaiDiary - MCP 配置加载与验证
+MaiSaka - MCP 配置加载与验证
 从 mcp_config.json 读取 MCP 服务器定义，解析为结构化配置对象。
 
 配置格式示例:

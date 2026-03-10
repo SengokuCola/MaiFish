@@ -2,7 +2,9 @@
   "permissions": {
     "allow": [
       "Bash(git rm sub_agent.py)",
-      "Bash(ls -1 *.py)"
+      "Bash(ls -1 *.py)",
+      "Bash(ls -la c:/GitHub/MaiSaka/*.py)",
+      "Bash(dir /B c:GitHubMaiSaka*.py)"
     ]
   }
 }

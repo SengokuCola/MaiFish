@@ -1,5 +1,5 @@
 """
-MaiDiary - Timing 模块
+MaiSaka - Timing 模块
 构建对话时间戳信息，供 Timing 分析模块使用。
 """
 

@@ -1,5 +1,5 @@
 """
-MaiDiary - 工具调用处理器
+MaiSaka - 工具调用处理器
 处理 LLM 循环中各工具（say/wait/stop/file/MCP）的执行逻辑。
 """
 
@@ -16,6 +16,7 @@ from rich.markdown import Markdown
 from config import console
 from input_reader import InputReader
 from llm_service import BaseLLMService
+from memory import get_memory_store
 
 if TYPE_CHECKING:
     from mcp_client import MCPManager
@@ -65,7 +66,7 @@ async def handle_say(tc, chat_history: list, ctx: ToolHandlerContext):
         console.print(
             Panel(
                 Markdown(rewritten),
-                title="💬 MaiDiary",
+                title="💬 MaiSaka",
                 border_style="magenta",
                 padding=(1, 2),
             )
@@ -352,3 +353,178 @@ async def handle_list_files(tc, chat_history: list):
             "tool_call_id": tc.id,
             "content": error_msg,
         })
+
+
+async def handle_store_context(tc, chat_history: list, ctx: ToolHandlerContext):
+    """
+    处理 store_context 工具：将指定范围的对话上下文存入记忆系统，然后从对话中移除。
+
+    参数：
+    - count: 要存入记忆的消息数量（从最早的消息开始）
+    - reason: 存入的原因
+    """
+    count = tc.arguments.get("count", 0)
+    reason = tc.arguments.get("reason", "")
+    console.print(f"[accent]🔧 调用工具: store_context(count={count}, reason=\"{reason}\")[/accent]")
+
+    if count <= 0:
+        error_msg = "count 参数必须大于 0"
+        console.print(f"[error]{error_msg}[/error]")
+        chat_history.append({
+            "role": "tool",
+            "tool_call_id": tc.id,
+            "content": error_msg,
+        })
+        return
+
+    # 计算实际消息数量（排除 role=tool 的工具返回消息）
+    actual_messages = [m for m in chat_history if m.get("role") != "tool"]
+
+    if count > len(actual_messages):
+        error_msg = f"count({count}) 超过了当前对话消息数量({len(actual_messages)})"
+        console.print(f"[warning]{error_msg}[/warning]")
+        count = len(actual_messages)
+
+    # 找到要移除的消息索引（确保 tool_calls 和 tool 响应成对）
+    indices_to_remove = []
+    removed_count = 0
+    i = 0
+
+    while i < len(chat_history) and removed_count < count:
+        msg = chat_history[i]
+        role = msg.get("role", "")
+
+        # 跳过 role=tool 的消息（它们会被对应的 assistant 消息一起处理）
+        if role == "tool":
+            i += 1
+            continue
+
+        # 检查这是否是一个带 tool_calls 的 assistant 消息
+        if role == "assistant" and "tool_calls" in msg:
+            # 收集这个 assistant 消息及其后续的 tool 响应消息
+            block_indices = [i]
+            j = i + 1
+            while j < len(chat_history):
+                next_msg = chat_history[j]
+                if next_msg.get("role") == "tool":
+                    block_indices.append(j)
+                    j += 1
+                else:
+                    break
+            indices_to_remove.extend(block_indices)
+            removed_count += 1
+            i = j
+        elif role in ["user", "assistant"]:
+            # 普通消息，可以直接删除
+            indices_to_remove.append(i)
+            removed_count += 1
+            i += 1
+        else:
+            i += 1
+
+    if not indices_to_remove:
+        result_msg = "没有找到可存入记忆的消息"
+        chat_history.append({
+            "role": "tool",
+            "tool_call_id": tc.id,
+            "content": result_msg,
+        })
+        return
+
+    # 收集要总结的消息（在删除前）
+    to_compress = []
+    for i in sorted(indices_to_remove):
+        if 0 <= i < len(chat_history):
+            to_compress.append(chat_history[i])
+
+    # 总结上下文并存入记忆
+    try:
+        with console.status(
+            "[info]🧠 正在总结上下文并存入记忆...[/info]",
+            spinner="dots",
+        ):
+            summary = await ctx.llm_service.summarize_context(to_compress)
+
+            if summary:
+                # 存入记忆
+                memory_store = get_memory_store()
+
+                # 调试输出：显示使用的记忆存储类型
+                store_type = type(memory_store).__name__
+                console.print(f"[muted]📦 使用记忆存储: {store_type}[/muted]")
+
+                # 调试输出：显示要存储的内容
+                console.print(f"[muted]📝 存储内容: {summary[:50]}...[/muted]")
+
+                result = await memory_store.store_memory(
+                    summary,
+                    metadata={
+                        "type": "manual_store",
+                        "reason": reason,
+                        "message_count": len(to_compress),
+                        "timestamp": datetime.now().isoformat(),
+                    },
+                )
+
+                # 调试输出：显示存储结果
+                if result:
+                    console.print("[success]✅ 记忆存储成功[/success]")
+                else:
+                    console.print("[warning]⚠️ 记忆存储失败（可能使用了 Mock 存储）[/warning]")
+
+                console.print(
+                    Panel(
+                        Markdown(summary),
+                        title="🧠 上下文已存入记忆",
+                        border_style="green",
+                        padding=(0, 1),
+                        style="dim",
+                    )
+                )
+
+                result_msg = f"✅ 已将 {len(to_compress)} 条消息存入记忆\n原因: {reason}\n总结: {summary[:100]}..."
+            else:
+                result_msg = "⚠️ 上下文总结失败，未存入记忆"
+                console.print(f"[warning]{result_msg}[/warning]")
+
+    except Exception as e:
+        result_msg = f"❌ 存入记忆时出错: {e}"
+        console.print(f"[error]{result_msg}[/error]")
+
+    # 从后往前删除消息
+    for i in sorted(indices_to_remove, reverse=True):
+        if 0 <= i < len(chat_history):
+            chat_history.pop(i)
+
+    # 清理"孤儿" tool 消息（没有对应 tool_calls 的 tool 消息）
+    # 收集所有有效的 tool_call_id
+    valid_tool_call_ids = set()
+    for msg in chat_history:
+        if msg.get("role") == "assistant" and "tool_calls" in msg:
+            for tool_call in msg["tool_calls"]:
+                valid_tool_call_ids.add(tool_call.get("id", ""))
+
+    # 删除无效的 tool 消息（从后往前）
+    i = len(chat_history) - 1
+    while i >= 0:
+        msg = chat_history[i]
+        if msg.get("role") == "tool":
+            tool_call_id = msg.get("tool_call_id", "")
+            if tool_call_id not in valid_tool_call_ids:
+                chat_history.pop(i)
+        i -= 1
+
+    chat_history.append({
+        "role": "tool",
+        "tool_call_id": tc.id,
+        "content": result_msg,
+    })
+
+
+# ──────────────────── 初始化 mai_files 目录 ────────────────────
+
+# 确保程序启动时 mai_files 目录存在
+try:
+    MAI_FILES_DIR.mkdir(parents=True, exist_ok=True)
+except Exception as e:
+    console.print(f"[warning]创建 mai_files 目录失败: {e}[/warning]")

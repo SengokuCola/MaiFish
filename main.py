@@ -1,5 +1,5 @@
 """
-MaiDiary - 程序入口
+MaiSaka - 程序入口
 使用方法:
     python main.py
 

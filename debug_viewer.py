@@ -1,5 +1,5 @@
 """
-MaiDiary Debug Viewer — 在独立命令行窗口中显示每次 LLM 调用的完整 Prompt。
+MaiSaka Debug Viewer — 在独立命令行窗口中显示每次 LLM 调用的完整 Prompt。
 
 由主进程自动启动，通过 TCP socket 接收数据。
 """
@@ -80,7 +80,7 @@ def main():
 
     console.print(
         Panel(
-            f"[bold cyan]MaiDiary Debug Viewer[/bold cyan]\n"
+            f"[bold cyan]MaiSaka Debug Viewer[/bold cyan]\n"
             f"[dim]监听端口: {port}  等待主进程连接...[/dim]",
             box=box.DOUBLE_EDGE,
             border_style="cyan",

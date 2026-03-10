@@ -1,5 +1,5 @@
 """
-MaiDiary - MCP 管理器
+MaiSaka - MCP 管理器
 管理所有 MCP 服务器连接，提供统一的工具发现与调用接口。
 """
 

@@ -1,5 +1,5 @@
 """
-MaiDiary - Debug Viewer 客户端
+MaiSaka - Debug Viewer 客户端
 在独立命令行窗口中显示每次 LLM 调用的完整 Prompt。
 通过 TCP socket 将数据发送给 debug_viewer.py 子进程。
 """

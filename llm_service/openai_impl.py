@@ -1,5 +1,5 @@
 """
-MaiDiary - OpenAI 兼容 LLM 服务实现
+MaiSaka - OpenAI 兼容 LLM 服务实现
 支持所有兼容 OpenAI Chat Completions 接口的服务商。
 """
 
@@ -9,14 +9,9 @@ from typing import Callable, List, Optional
 from openai import AsyncOpenAI
 
 from .base import BaseLLMService, ChatResponse, ModelInfo, ToolCall
-from .prompts import (
-    CHAT_TOOLS,
-    DEFAULT_CHAT_SYSTEM_PROMPT,
-    EQ_SYSTEM_PROMPT,
-    SAY_REWRITE_PROMPT,
-    TIMING_SYSTEM_PROMPT,
-)
+from .prompts import CHAT_TOOLS
 from .utils import format_chat_history
+from prompt_loader import load_prompt
 
 
 class OpenAILLMService(BaseLLMService):
@@ -49,7 +44,7 @@ class OpenAILLMService(BaseLLMService):
         self._model = model
         self._temperature = temperature
         self._max_tokens = max_tokens
-        self._chat_system_prompt = chat_system_prompt or DEFAULT_CHAT_SYSTEM_PROMPT
+        self._chat_system_prompt = chat_system_prompt or load_prompt("chat.system")
         self._enable_thinking = enable_thinking
 
         self._client = AsyncOpenAI(
@@ -118,7 +113,8 @@ class OpenAILLMService(BaseLLMService):
                     "type": "function",
                     "function": {
                         "name": tc.function.name,
-                        "arguments": tc.function.arguments,
+                        # 确保 arguments 是有效的 JSON 字符串，空参数用 "{}"
+                        "arguments": tc.function.arguments or "{}",
                     },
                 }
                 for tc in msg.tool_calls
@@ -158,8 +154,8 @@ class OpenAILLMService(BaseLLMService):
     async def rewrite_say(self, text: str) -> str:
         """将 say 工具的输出文本改写为口语化贴吧风格。"""
         messages = [
-            {"role": "system", "content": SAY_REWRITE_PROMPT},
-            {"role": "user", "content": text},
+            {"role": "system", "content": load_prompt("say_rewrite.system")},
+            {"role": "assistant", "content": text},
         ]
         extra_body = self._build_extra_body()
 
@@ -185,7 +181,7 @@ class OpenAILLMService(BaseLLMService):
         """Timing 模块：分析对话的时间维度信息。"""
         formatted = format_chat_history(chat_history)
         timing_messages = [
-            {"role": "system", "content": TIMING_SYSTEM_PROMPT},
+            {"role": "system", "content": load_prompt("timing.system")},
             {
                 "role": "user",
                 "content": (
@@ -215,7 +211,7 @@ class OpenAILLMService(BaseLLMService):
         formatted = format_chat_history(recent_messages)
 
         eq_messages = [
-            {"role": "system", "content": EQ_SYSTEM_PROMPT},
+            {"role": "system", "content": load_prompt("emotion.system")},
             {
                 "role": "user",
                 "content": f"以下是最近几轮对话记录，请分析其中用户的情绪状态和言语态度：\n\n{formatted}",
@@ -232,6 +228,133 @@ class OpenAILLMService(BaseLLMService):
         )
 
         return response.choices[0].message.content or ""
+
+    # ──────── 记忆需求分析模块 ────────
+
+    async def analyze_memory_need(self, chat_history: List[dict]) -> str:
+        """记忆需求分析模块：分析当前对话上下文，思考需要查询什么记忆信息。"""
+        # 获取最近几轮对话用于分析
+        recent_messages = chat_history[-10:] if len(chat_history) > 10 else chat_history
+        formatted = format_chat_history(recent_messages)
+
+        memory_need_messages = [
+            {"role": "system", "content": load_prompt("memory_need.system")},
+            {
+                "role": "user",
+                "content": f"以下是最近的对话记录，请分析需要从记忆系统中查询什么信息：\n\n{formatted}",
+            },
+        ]
+        extra_body = self._build_extra_body()
+
+        try:
+            response = await self._call_llm(
+                "记忆需求分析",
+                memory_need_messages,
+                temperature=0.3,
+                max_tokens=512,
+                **({"extra_body": extra_body} if extra_body else {}),
+            )
+            return response.choices[0].message.content or ""
+        except Exception:
+            # 分析失败时返回空字符串（表示无需查询）
+            return ""
+
+    # ──────── 上下文总结模块 ────────
+
+    async def summarize_context(self, context_messages: List[dict]) -> str:
+        """上下文总结模块：对需要压缩的上下文进行总结。"""
+        formatted = format_chat_history(context_messages)
+
+        summarize_messages = [
+            {"role": "system", "content": load_prompt("context_summarize.system")},
+            {
+                "role": "user",
+                "content": f"请对以下对话内容进行总结，以便存入记忆系统：\n\n{formatted}",
+            },
+        ]
+        extra_body = self._build_extra_body()
+
+        try:
+            response = await self._call_llm(
+                "上下文总结",
+                summarize_messages,
+                temperature=0.3,
+                max_tokens=1024,
+                **({"extra_body": extra_body} if extra_body else {}),
+            )
+            return response.choices[0].message.content or ""
+        except Exception:
+            # 总结失败时返回空字符串
+            return ""
+
+    # ──────── 记忆选择模块 ────────
+
+    async def select_relevant_memories(
+        self, questions: List[str], memories: List[dict]
+    ) -> List[int]:
+        """
+        记忆选择模块：从所有记忆中选择与问题相关的记忆。
+
+        将所有记忆（编号）和问句传给 LLM，让 LLM 选择有用的记忆并返回编号。
+        """
+        if not questions or not memories:
+            return []
+
+        # 构建记忆列表文本
+        memory_list_text = "\n".join([
+            f"{i+1}. {m.get('content', '')}"
+            for i, m in enumerate(memories)
+        ])
+
+        # 构建问题文本
+        questions_text = "\n".join([
+            f"- {q}"
+            for q in questions
+        ])
+
+        select_messages = [
+            {"role": "system", "content": load_prompt("memory_select.system")},
+            {
+                "role": "user",
+                "content": (
+                    f"【问题】\n{questions_text}\n\n"
+                    f"【记忆列表】\n{memory_list_text}\n\n"
+                    f"请选择与问题相关的记忆编号。"
+                ),
+            },
+        ]
+        extra_body = self._build_extra_body()
+
+        try:
+            response = await self._call_llm(
+                "记忆选择",
+                select_messages,
+                temperature=0.3,
+                max_tokens=256,
+                **({"extra_body": extra_body} if extra_body else {}),
+            )
+            result = response.choices[0].message.content or ""
+
+            # 解析返回的编号
+            result = result.strip()
+            if "无" in result or not result:
+                return []
+
+            # 解析编号（支持逗号分隔、空格分隔）
+            selected_indices = []
+            for part in result.replace(",", " ").replace("，", " ").split():
+                try:
+                    idx = int(part.strip())
+                    # 转换为 0-based 索引，并检查范围
+                    if 1 <= idx <= len(memories):
+                        selected_indices.append(idx - 1)
+                except ValueError:
+                    continue
+
+            return selected_indices
+        except Exception:
+            # 选择失败时返回空列表
+            return []
 
     # ──────── 对话上下文构建 ────────
 
