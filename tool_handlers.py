@@ -53,6 +53,8 @@ class ToolHandlerContext:
         self.reader = reader
         self.user_input_times = user_input_times
         self.last_user_input_time: Optional[datetime] = None
+        self.negotiation_requested: bool = False
+        self.negotiation_reason: Optional[str] = None
 
 
 async def handle_say(tc, chat_history: list, ctx: ToolHandlerContext):
@@ -98,66 +100,6 @@ async def handle_say(tc, chat_history: list, ctx: ToolHandlerContext):
             "tool_call_id": tc.id,
             "content": "say 内容为空，未展示",
         })
-
-
-async def handle_stop(tc, chat_history: list):
-    """处理 stop 工具：结束对话循环。"""
-    console.print("[accent]🔧 调用工具: stop()[/accent]")
-    chat_history.append({
-        "role": "tool",
-        "tool_call_id": tc.id,
-        "content": "对话循环已停止，等待用户下次输入。",
-    })
-
-
-async def handle_wait(tc, chat_history: list, ctx: ToolHandlerContext) -> str:
-    """
-    处理 wait 工具：等待用户输入或超时。
-
-    Returns:
-        工具结果字符串。以 "[[QUIT]]" 开头表示用户要求退出对话。
-    """
-    seconds = tc.arguments.get("seconds", 30)
-    seconds = max(5, min(seconds, 300))  # 限制 5-300 秒
-    console.print(f"[accent]🔧 调用工具: wait({seconds})[/accent]")
-
-    tool_result = await _do_wait(seconds, ctx)
-
-    chat_history.append({
-        "role": "tool",
-        "tool_call_id": tc.id,
-        "content": tool_result,
-    })
-    return tool_result
-
-
-async def _do_wait(seconds: int, ctx: ToolHandlerContext) -> str:
-    """实际执行等待逻辑。"""
-    console.print(f"[muted]⏳ 等待回复 (最多 {seconds} 秒)...[/muted]")
-    console.print("[bold magenta]💬 > [/bold magenta]", end="")
-
-    user_input = await ctx.reader.get_line(timeout=seconds)
-
-    if user_input is None:
-        # 超时
-        console.print()  # 换行
-        console.print("[muted]⏳ 等待超时[/muted]")
-        return "等待超时，用户未输入任何内容"
-
-    user_input = user_input.strip()
-
-    if not user_input:
-        return "用户发送了空消息"
-
-    # 更新 timing 时间戳
-    now = datetime.now()
-    ctx.last_user_input_time = now
-    ctx.user_input_times.append(now)
-
-    if user_input.lower() in ("/quit", "/exit", "/q"):
-        return "[[QUIT]] 用户主动退出了对话"
-
-    return f"用户说：{user_input}"
 
 
 async def handle_mcp_tool(tc, chat_history: list, mcp_manager: "MCPManager"):
@@ -542,6 +484,32 @@ async def handle_store_context(tc, chat_history: list, ctx: ToolHandlerContext):
         "role": "tool",
         "tool_call_id": tc.id,
         "content": result_msg,
+    })
+
+
+async def handle_negotiate(tc, chat_history: list, ctx: ToolHandlerContext):
+    """处理negotiate工具：麦麦请求协商"""
+    reason = tc.arguments.get("reason", "")
+    console.print(f"[accent]🤔 麦麦请求协商: {reason}[/accent]")
+
+    # 设置协商标志
+    ctx.negotiation_requested = True
+    ctx.negotiation_reason = reason
+
+    console.print(
+        Panel(
+            Markdown(reason),
+            title="🤔 协商请求",
+            border_style="yellow",
+            padding=(0, 1),
+        )
+    )
+
+    # 添加特殊标记到chat_history，供TwinCoordinator检测
+    chat_history.append({
+        "role": "tool",
+        "tool_call_id": tc.id,
+        "content": f"[NEGOTIATION_REQUEST] {reason}",
     })
 
 # ──────────────────── 初始化 mai_files 目录 ────────────────────

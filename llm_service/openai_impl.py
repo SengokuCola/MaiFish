@@ -10,7 +10,7 @@ from openai import AsyncOpenAI
 
 from .base import BaseLLMService, ChatResponse, ModelInfo, ToolCall
 from .prompts import get_enabled_chat_tools
-from .utils import format_chat_history, format_chat_history_for_eq, filter_for_api
+from .utils import format_chat_history, filter_for_api
 from prompt_loader import load_prompt
 
 
@@ -209,96 +209,6 @@ class OpenAILLMService(BaseLLMService):
         response = await self._call_llm(
             "Timing 模块",
             timing_messages,
-            temperature=0.3,
-            max_tokens=512,
-            **({"extra_body": extra_body} if extra_body else {}),
-        )
-
-        return response.choices[0].message.content or ""
-
-    # ──────── 情商模块 (EQ Module) ────────
-
-    async def analyze_emotion(self, chat_history: List[dict]) -> str:
-        """情商模块：分析用户的情绪状态和言语态度。"""
-        # 过滤掉感知消息（AI 的内部感知不需要再分析）
-        filtered_history = [msg for msg in chat_history if msg.get("_type") != "perception"]
-        # 获取最近几轮对话（约 8-10 条消息，约 3-5 轮）
-        recent_messages = filtered_history[-10:] if len(filtered_history) > 10 else filtered_history
-        # 使用情商模块专用格式化函数：只包含用户回复、助手思考、助手说
-        formatted = format_chat_history_for_eq(recent_messages)
-
-        eq_messages = [
-            {"role": "system", "content": load_prompt("emotion.system")},
-            {
-                "role": "user",
-                "content": f"以下是最近几轮对话记录，请分析其中用户的情绪状态和言语态度：\n\n{formatted}",
-            },
-        ]
-        extra_body = self._build_extra_body()
-
-        response = await self._call_llm(
-            "情商模块 (EQ)",
-            eq_messages,
-            temperature=0.3,
-            max_tokens=512,
-            **({"extra_body": extra_body} if extra_body else {}),
-        )
-
-        return response.choices[0].message.content or ""
-
-    # ──────── 认知模块 (Cognition Module) ────────
-
-    async def analyze_cognition(self, chat_history: List[dict]) -> str:
-        """认知模块：分析用户的意图、认知状态和目的。"""
-        # 过滤掉感知消息（AI 的内部感知不需要再分析）
-        filtered_history = [msg for msg in chat_history if msg.get("_type") != "perception"]
-        # 获取最近几轮对话（约 8-10 条消息，约 3-5 轮）
-        recent_messages = filtered_history[-10:] if len(filtered_history) > 10 else filtered_history
-        # 使用情商模块专用格式化函数：只包含用户回复、助手思考、助手说
-        formatted = format_chat_history_for_eq(recent_messages)
-
-        cognition_messages = [
-            {"role": "system", "content": load_prompt("cognition.system")},
-            {
-                "role": "user",
-                "content": f"以下是最近几轮对话记录，请分析其中用户的意图、认知状态和目的：\n\n{formatted}",
-            },
-        ]
-        extra_body = self._build_extra_body()
-
-        response = await self._call_llm(
-            "认知模块 (Cognition)",
-            cognition_messages,
-            temperature=0.3,
-            max_tokens=512,
-            **({"extra_body": extra_body} if extra_body else {}),
-        )
-
-        return response.choices[0].message.content or ""
-
-    # ──────── 自我反思模块 (Reflection Module) ────────
-
-    async def analyze_reflection(self, chat_history: List[dict]) -> str:
-        """自我反思模块：分析自己的回复逻辑，检查人设一致性、回复合理性和认知局限性。"""
-        # 过滤掉感知消息（AI 的内部感知不需要再分析）
-        filtered_history = [msg for msg in chat_history if msg.get("_type") != "perception"]
-        # 获取最近几轮对话（约 8-10 条消息，约 3-5 轮）
-        recent_messages = filtered_history[-10:] if len(filtered_history) > 10 else filtered_history
-        # 使用情商模块专用格式化函数：只包含用户回复、助手思考、助手说
-        formatted = format_chat_history_for_eq(recent_messages)
-
-        reflection_messages = [
-            {"role": "system", "content": load_prompt("reflection.system")},
-            {
-                "role": "user",
-                "content": f"以下是最近几轮对话记录，请反思自己的回复并分析人设一致性、回复合理性和认知局限性：\n\n{formatted}",
-            },
-        ]
-        extra_body = self._build_extra_body()
-
-        response = await self._call_llm(
-            "自我反思模块 (Reflection)",
-            reflection_messages,
             temperature=0.3,
             max_tokens=512,
             **({"extra_body": extra_body} if extra_body else {}),

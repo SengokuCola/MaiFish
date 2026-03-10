@@ -13,7 +13,7 @@ from rich.markdown import Markdown
 from rich.text import Text
 from rich import box
 
-from config import console, ENABLE_EMOTION_MODULE, ENABLE_COGNITION_MODULE, ENABLE_REFLECTION_MODULE, ENABLE_TIMING_MODULE, ENABLE_MCP
+from config import console, ENABLE_TIMING_MODULE, ENABLE_MCP
 from memory import get_memory_store
 from input_reader import InputReader
 from debug_client import DebugViewer
@@ -24,12 +24,11 @@ from mcp_client import MCPManager
 from tool_handlers import (
     ToolHandlerContext,
     handle_say,
-    handle_stop,
-    handle_wait,
     handle_write_file,
     handle_read_file,
     handle_list_files,
     handle_store_context,
+    handle_negotiate,
     handle_mcp_tool,
     handle_unknown_tool,
 )
@@ -61,6 +60,9 @@ class BufferCLI:
         self._mcp_manager: Optional[MCPManager] = None
         # Debug Viewer
         self._debug_viewer = DebugViewer()
+        # 协商状态跟踪（Twin 模式使用）
+        self._negotiation_requested: bool = False
+        self._negotiation_reason: Optional[str] = None
         self._init_llm()
 
     def _init_llm(self):
@@ -359,7 +361,7 @@ class BufferCLI:
 
         await self._run_llm_loop(self._chat_history)
 
-    async def _run_llm_loop(self, chat_history: list):
+    async def _run_llm_loop(self, chat_history: list, max_steps: Optional[int] = None):
         """
         LLM 循环架构核心。
 
@@ -377,6 +379,7 @@ class BufferCLI:
         """
         consecutive_errors = 0
         last_had_tool_calls = True  # 第一次循环总是执行模块分析
+        step_count = 0  # 已执行的思考+工具步骤计数
 
         while True:
             # ── 上下文管理 ──
@@ -396,15 +399,6 @@ class BufferCLI:
                 tasks = []
                 status_text_parts = []
 
-                if ENABLE_EMOTION_MODULE:
-                    tasks.append(("eq", self.llm_service.analyze_emotion(chat_history)))
-                    status_text_parts.append("🎭")
-                if ENABLE_COGNITION_MODULE:
-                    tasks.append(("cognition", self.llm_service.analyze_cognition(chat_history)))
-                    status_text_parts.append("🧩")
-                if ENABLE_REFLECTION_MODULE:
-                    tasks.append(("reflection", self.llm_service.analyze_reflection(chat_history)))
-                    status_text_parts.append("🪞")
                 if ENABLE_TIMING_MODULE:
                     tasks.append(("timing", self.llm_service.analyze_timing(chat_history, timing_info)))
                     status_text_parts.append("⏱️")
@@ -418,72 +412,12 @@ class BufferCLI:
                     results = await asyncio.gather(*[task for _, task in tasks], return_exceptions=True)
 
                 # 解析结果
-                eq_result, cognition_result, reflection_result, timing_result, memory_result = None, None, None, None, None
+                timing_result, memory_result = None, None
                 result_idx = 0
-                if ENABLE_EMOTION_MODULE:
-                    eq_result = results[result_idx]
-                    result_idx += 1
-                if ENABLE_COGNITION_MODULE:
-                    cognition_result = results[result_idx]
-                    result_idx += 1
-                if ENABLE_REFLECTION_MODULE:
-                    reflection_result = results[result_idx]
-                    result_idx += 1
                 if ENABLE_TIMING_MODULE:
                     timing_result = results[result_idx]
                     result_idx += 1
                 memory_result = results[result_idx]
-
-                # 处理情商模块结果
-                eq_analysis = ""
-                if ENABLE_EMOTION_MODULE:
-                    if isinstance(eq_result, Exception):
-                        console.print(f"[warning]情商模块分析失败: {eq_result}[/warning]")
-                    elif eq_result:
-                        eq_analysis = eq_result
-                        console.print(
-                            Panel(
-                                Markdown(eq_analysis),
-                                title="🎭 情绪感知",
-                                border_style="bright_yellow",
-                                padding=(0, 1),
-                                style="dim",
-                            )
-                        )
-
-                # 处理认知模块结果
-                cognition_analysis = ""
-                if ENABLE_COGNITION_MODULE:
-                    if isinstance(cognition_result, Exception):
-                        console.print(f"[warning]认知模块分析失败: {cognition_result}[/warning]")
-                    elif cognition_result:
-                        cognition_analysis = cognition_result
-                        console.print(
-                            Panel(
-                                Markdown(cognition_analysis),
-                                title="🧩 意图感知",
-                                border_style="bright_cyan",
-                                padding=(0, 1),
-                                style="dim",
-                            )
-                        )
-
-                # 处理自我反思模块结果
-                reflection_analysis = ""
-                if ENABLE_REFLECTION_MODULE:
-                    if isinstance(reflection_result, Exception):
-                        console.print(f"[warning]自我反思模块分析失败: {reflection_result}[/warning]")
-                    elif reflection_result:
-                        reflection_analysis = reflection_result
-                        console.print(
-                            Panel(
-                                Markdown(reflection_analysis),
-                                title="🪞 自我反思",
-                                border_style="bright_magenta",
-                                padding=(0, 1),
-                                style="dim",
-                            )
-                        )
 
                 # 处理 Timing 模块结果
                 timing_analysis = ""
@@ -524,12 +458,6 @@ class BufferCLI:
 
                 # 构建感知内容
                 perception_parts = []
-                if eq_analysis:
-                    perception_parts.append(f"情绪感知\n{eq_analysis}")
-                if cognition_analysis:
-                    perception_parts.append(f"意图感知\n{cognition_analysis}")
-                if reflection_analysis:
-                    perception_parts.append(f"自我反思\n{reflection_analysis}")
                 if timing_analysis:
                     perception_parts.append(f"时间感知\n{timing_analysis}")
                 if memory_analysis:
@@ -585,18 +513,6 @@ class BufferCLI:
                     if tc.name == "say":
                         await handle_say(tc, chat_history, ctx)
 
-                    elif tc.name == "stop":
-                        await handle_stop(tc, chat_history)
-                        should_stop = True
-
-                    elif tc.name == "wait":
-                        tool_result = await handle_wait(tc, chat_history, ctx)
-                        # 同步回 timing 时间戳
-                        if ctx.last_user_input_time != self._last_user_input_time:
-                            self._last_user_input_time = ctx.last_user_input_time
-                        if tool_result.startswith("[[QUIT]]"):
-                            should_stop = True
-
                     elif tc.name == "write_file":
                         await handle_write_file(tc, chat_history)
 
@@ -605,6 +521,9 @@ class BufferCLI:
 
                     elif tc.name == "list_files":
                         await handle_list_files(tc, chat_history)
+
+                    elif tc.name == "negotiate":
+                        await handle_negotiate(tc, chat_history, ctx)
 
                     elif tc.name == "store_context":
                         await handle_store_context(tc, chat_history, ctx)
@@ -626,6 +545,11 @@ class BufferCLI:
                 # （不做任何额外操作，直接回到循环顶部再次调用 LLM）
                 # 标记上次没有调用工具，下次循环跳过模块分析
                 last_had_tool_calls = False
+
+            # ── 步数控制（用于 Twin 模式等需要“单步执行”的场景） ──
+            step_count += 1
+            if max_steps is not None and step_count >= max_steps:
+                break
 
     # ──────── 主循环 ────────
 
@@ -684,3 +608,31 @@ class BufferCLI:
             self._debug_viewer.close()
             if self._mcp_manager:
                 await self._mcp_manager.close()
+
+    # ──────── Twin 模式支持 ────────
+
+    def get_chat_history(self) -> list:
+        """获取当前对话历史（供Supervisor观察）"""
+        return self._chat_history.copy() if self._chat_history else []
+
+    def clear_chat_history(self):
+        """清空对话历史（用于重新开始）"""
+        self._chat_history = None
+
+    def has_negotiation_request(self) -> bool:
+        """检查是否有协商请求"""
+        return self._negotiation_requested
+
+    def get_negotiation_reason(self) -> Optional[str]:
+        """获取协商理由"""
+        return self._negotiation_reason
+
+    def clear_negotiation(self):
+        """清除协商标志"""
+        self._negotiation_requested = False
+        self._negotiation_reason = None
+
+    def set_negotiation(self, reason: str):
+        """设置协商请求（由 handle_negotiate 调用）"""
+        self._negotiation_requested = True
+        self._negotiation_reason = reason

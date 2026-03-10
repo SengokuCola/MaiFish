@@ -92,54 +92,6 @@ class BaseLLMService(ABC):
         ...
 
     @abstractmethod
-    async def analyze_emotion(self, chat_history: List[dict]) -> str:
-        """
-        情商模块：分析对话对方（用户）的情绪状态和言语态度。
-
-        接收与主 Agent 相同的上下文，返回一段简洁的情绪分析文本。
-        该文本将被注入主 Agent 上下文，帮助主 Agent 更好地理解用户状态。
-
-        Args:
-            chat_history: 当前对话历史（与主 Agent 完全一致的上下文）
-
-        Returns:
-            情绪分析文本
-        """
-        ...
-
-    @abstractmethod
-    async def analyze_cognition(self, chat_history: List[dict]) -> str:
-        """
-        认知模块：分析对话对方（用户）的意图、认知状态和目的。
-
-        接收与主 Agent 相同的上下文，返回一段简洁的认知分析文本。
-        该文本将被注入主 Agent 上下文，帮助主 Agent 更好地理解用户意图。
-
-        Args:
-            chat_history: 当前对话历史（与主 Agent 完全一致的上下文）
-
-        Returns:
-            认知分析文本
-        """
-        ...
-
-    @abstractmethod
-    async def analyze_reflection(self, chat_history: List[dict]) -> str:
-        """
-        自我反思模块：分析自己的回复逻辑，检查人设一致性、回复合理性和认知局限性。
-
-        接收与主 Agent 相同的上下文，返回一段简洁的自我反思文本。
-        该文本将被注入主 Agent 上下文，帮助主 Agent 进行自我纠错。
-
-        Args:
-            chat_history: 当前对话历史（与主 Agent 完全一致的上下文）
-
-        Returns:
-            自我反思分析文本
-        """
-        ...
-
-    @abstractmethod
     def get_model_info(self) -> ModelInfo:
         """返回当前使用的模型信息。"""
         ...

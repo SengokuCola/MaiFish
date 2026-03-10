@@ -34,37 +34,21 @@ CORE_TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "wait",
+            "name": "negotiate",
             "description": (
-                "暂时结束你的发言，把话语权交给用户，等待对方说话。"
-                "指定等待的最大秒数。"
-                "如果用户在等待期间说了话，你会通过工具结果收到内容；"
-                "如果超时对方没有说话，你会收到超时通知。"
+                "当不同意对方的指导时，使用此工具表达你的观点并请求协商。"
+                "说明你为什么不同意，你认为应该如何做。"
+                "这会启动一个协商流程，让对方考虑你的观点。"
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "seconds": {
-                        "type": "integer",
-                        "description": "等待的秒数（1-24*3600",
-                    }
+                    "reason": {
+                        "type": "string",
+                        "description": "你不同意的原因和你的观点，请用自然的方式表达",
+                    },
                 },
-                "required": ["seconds"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "stop",
-            "description": (
-                "结束当前对话循环，进入待机状态。"
-                "调用后主循环会停止，直到用户下次输入新内容时重新唤醒。"
-                "适合在对话自然结束、用户不再回复、或深夜等不适合继续聊天时使用。"
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {},
+                "required": ["reason"],
             },
         },
     },
