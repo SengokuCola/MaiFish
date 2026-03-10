@@ -9,8 +9,8 @@ from typing import Callable, List, Optional
 from openai import AsyncOpenAI
 
 from .base import BaseLLMService, ChatResponse, ModelInfo, ToolCall
-from .prompts import CHAT_TOOLS
-from .utils import format_chat_history
+from .prompts import get_enabled_chat_tools
+from .utils import format_chat_history, format_chat_history_for_eq, filter_for_api
 from prompt_loader import load_prompt
 
 
@@ -44,8 +44,31 @@ class OpenAILLMService(BaseLLMService):
         self._model = model
         self._temperature = temperature
         self._max_tokens = max_tokens
-        self._chat_system_prompt = chat_system_prompt or load_prompt("chat.system")
         self._enable_thinking = enable_thinking
+
+        # 如果没有提供自定义提示词，则根据配置动态构建
+        if chat_system_prompt is None:
+            from config import ENABLE_WRITE_FILE, ENABLE_READ_FILE, ENABLE_LIST_FILES
+
+            # 构建文件工具说明
+            file_tools_parts = []
+            if ENABLE_WRITE_FILE:
+                file_tools_parts.append("• write_file(filename, content) — 在 mai_files 目录下写入文件，支持任意格式。")
+            if ENABLE_READ_FILE:
+                file_tools_parts.append("• read_file(filename) — 读取 mai_files 目录下的文件内容。")
+            if ENABLE_LIST_FILES:
+                file_tools_parts.append("• list_files() — 获取 mai_files 目录下所有文件的元信息列表。")
+
+            # 如果有任何文件工具启用，添加前缀空行
+            if file_tools_parts:
+                file_tools_section = "\n" + "\n".join(file_tools_parts) + "\n"
+            else:
+                file_tools_section = ""
+
+            # 加载提示词模板并注入文件工具部分
+            self._chat_system_prompt = load_prompt("chat.system", file_tools_section=file_tools_section)
+        else:
+            self._chat_system_prompt = chat_system_prompt
 
         self._client = AsyncOpenAI(
             api_key=api_key,
@@ -127,12 +150,25 @@ class OpenAILLMService(BaseLLMService):
         """执行对话循环的一步，返回包含文本和/或工具调用的响应。"""
         extra_body = self._build_extra_body()
 
+        # 延迟导入配置以避免循环导入
+        from config import ENABLE_WRITE_FILE, ENABLE_READ_FILE, ENABLE_LIST_FILES
+
+        # 获取根据配置启用的内置工具
+        enabled_tools = get_enabled_chat_tools(
+            enable_write_file=ENABLE_WRITE_FILE,
+            enable_read_file=ENABLE_READ_FILE,
+            enable_list_files=ENABLE_LIST_FILES,
+        )
+
         # 合并内置工具与 MCP 等外部工具
-        all_tools = CHAT_TOOLS + self._extra_tools
+        all_tools = enabled_tools + self._extra_tools
+
+        # 过滤内部字段（如 _type），只保留 API 需要的字段
+        api_messages = filter_for_api(chat_history)
 
         response = await self._call_llm(
             "主 Agent 对话",
-            chat_history,
+            api_messages,
             tools=all_tools,
             temperature=self._temperature,
             max_tokens=self._max_tokens,
@@ -149,37 +185,15 @@ class OpenAILLMService(BaseLLMService):
     def get_model_info(self) -> ModelInfo:
         return ModelInfo(model_name=self._model, base_url=self._base_url)
 
-    # ──────── say 后处理 ────────
-
-    async def rewrite_say(self, text: str) -> str:
-        """将 say 工具的输出文本改写为口语化贴吧风格。"""
-        messages = [
-            {"role": "system", "content": load_prompt("say_rewrite.system")},
-            {"role": "assistant", "content": text},
-        ]
-        extra_body = self._build_extra_body()
-
-        try:
-            response = await self._call_llm(
-                "say 风格改写",
-                messages,
-                temperature=0.8,
-                max_tokens=512,
-                **({"extra_body": extra_body} if extra_body else {}),
-            )
-            result = response.choices[0].message.content or text
-            return result.strip()
-        except Exception:
-            # 改写失败时回退到原文
-            return text
-
     # ──────── Timing 模块 ────────
 
     async def analyze_timing(
         self, chat_history: List[dict], timing_info: str,
     ) -> str:
         """Timing 模块：分析对话的时间维度信息。"""
-        formatted = format_chat_history(chat_history)
+        # 过滤掉感知消息（AI 的内部感知不需要再分析）
+        filtered_history = [msg for msg in chat_history if msg.get("_type") != "perception"]
+        formatted = format_chat_history(filtered_history)
         timing_messages = [
             {"role": "system", "content": load_prompt("timing.system")},
             {
@@ -206,9 +220,12 @@ class OpenAILLMService(BaseLLMService):
 
     async def analyze_emotion(self, chat_history: List[dict]) -> str:
         """情商模块：分析用户的情绪状态和言语态度。"""
+        # 过滤掉感知消息（AI 的内部感知不需要再分析）
+        filtered_history = [msg for msg in chat_history if msg.get("_type") != "perception"]
         # 获取最近几轮对话（约 8-10 条消息，约 3-5 轮）
-        recent_messages = chat_history[-10:] if len(chat_history) > 10 else chat_history
-        formatted = format_chat_history(recent_messages)
+        recent_messages = filtered_history[-10:] if len(filtered_history) > 10 else filtered_history
+        # 使用情商模块专用格式化函数：只包含用户回复、助手思考、助手说
+        formatted = format_chat_history_for_eq(recent_messages)
 
         eq_messages = [
             {"role": "system", "content": load_prompt("emotion.system")},
@@ -229,12 +246,74 @@ class OpenAILLMService(BaseLLMService):
 
         return response.choices[0].message.content or ""
 
+    # ──────── 认知模块 (Cognition Module) ────────
+
+    async def analyze_cognition(self, chat_history: List[dict]) -> str:
+        """认知模块：分析用户的意图、认知状态和目的。"""
+        # 过滤掉感知消息（AI 的内部感知不需要再分析）
+        filtered_history = [msg for msg in chat_history if msg.get("_type") != "perception"]
+        # 获取最近几轮对话（约 8-10 条消息，约 3-5 轮）
+        recent_messages = filtered_history[-10:] if len(filtered_history) > 10 else filtered_history
+        # 使用情商模块专用格式化函数：只包含用户回复、助手思考、助手说
+        formatted = format_chat_history_for_eq(recent_messages)
+
+        cognition_messages = [
+            {"role": "system", "content": load_prompt("cognition.system")},
+            {
+                "role": "user",
+                "content": f"以下是最近几轮对话记录，请分析其中用户的意图、认知状态和目的：\n\n{formatted}",
+            },
+        ]
+        extra_body = self._build_extra_body()
+
+        response = await self._call_llm(
+            "认知模块 (Cognition)",
+            cognition_messages,
+            temperature=0.3,
+            max_tokens=512,
+            **({"extra_body": extra_body} if extra_body else {}),
+        )
+
+        return response.choices[0].message.content or ""
+
+    # ──────── 自我反思模块 (Reflection Module) ────────
+
+    async def analyze_reflection(self, chat_history: List[dict]) -> str:
+        """自我反思模块：分析自己的回复逻辑，检查人设一致性、回复合理性和认知局限性。"""
+        # 过滤掉感知消息（AI 的内部感知不需要再分析）
+        filtered_history = [msg for msg in chat_history if msg.get("_type") != "perception"]
+        # 获取最近几轮对话（约 8-10 条消息，约 3-5 轮）
+        recent_messages = filtered_history[-10:] if len(filtered_history) > 10 else filtered_history
+        # 使用情商模块专用格式化函数：只包含用户回复、助手思考、助手说
+        formatted = format_chat_history_for_eq(recent_messages)
+
+        reflection_messages = [
+            {"role": "system", "content": load_prompt("reflection.system")},
+            {
+                "role": "user",
+                "content": f"以下是最近几轮对话记录，请反思自己的回复并分析人设一致性、回复合理性和认知局限性：\n\n{formatted}",
+            },
+        ]
+        extra_body = self._build_extra_body()
+
+        response = await self._call_llm(
+            "自我反思模块 (Reflection)",
+            reflection_messages,
+            temperature=0.3,
+            max_tokens=512,
+            **({"extra_body": extra_body} if extra_body else {}),
+        )
+
+        return response.choices[0].message.content or ""
+
     # ──────── 记忆需求分析模块 ────────
 
     async def analyze_memory_need(self, chat_history: List[dict]) -> str:
         """记忆需求分析模块：分析当前对话上下文，思考需要查询什么记忆信息。"""
+        # 过滤掉感知消息（AI 的内部感知不需要再分析）
+        filtered_history = [msg for msg in chat_history if msg.get("_type") != "perception"]
         # 获取最近几轮对话用于分析
-        recent_messages = chat_history[-10:] if len(chat_history) > 10 else chat_history
+        recent_messages = filtered_history[-10:] if len(filtered_history) > 10 else filtered_history
         formatted = format_chat_history(recent_messages)
 
         memory_need_messages = [

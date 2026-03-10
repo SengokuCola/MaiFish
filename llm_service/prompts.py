@@ -6,9 +6,10 @@ MaiSaka - LLM 工具定义
 使用 prompt_loader.load_prompt() 加载模板。
 """
 
-# ──────────────────── 主 Agent 工具定义 ────────────────────
+# ──────────────────── 工具定义 ────────────────────
 
-CHAT_TOOLS = [
+# 核心工具（始终启用）
+CORE_TOOLS = [
     {
         "type": "function",
         "function": {
@@ -67,7 +68,11 @@ CHAT_TOOLS = [
             },
         },
     },
-    {
+]
+
+# 可选工具（可通过配置启用/禁用）
+OPTIONAL_TOOLS = {
+    "write_file": {
         "type": "function",
         "function": {
             "name": "write_file",
@@ -91,7 +96,7 @@ CHAT_TOOLS = [
             },
         },
     },
-    {
+    "read_file": {
         "type": "function",
         "function": {
             "name": "read_file",
@@ -111,7 +116,7 @@ CHAT_TOOLS = [
             },
         },
     },
-    {
+    "list_files": {
         "type": "function",
         "function": {
             "name": "list_files",
@@ -125,6 +130,10 @@ CHAT_TOOLS = [
             },
         },
     },
+}
+
+# 始终启用的工具
+ALWAYS_ENABLED_TOOLS = [
     {
         "type": "function",
         "function": {
@@ -153,3 +162,41 @@ CHAT_TOOLS = [
         },
     },
 ]
+
+# ──────────────────── 主 Agent 工具定义 ────────────────────
+
+# 保持原有的 CHAT_TOOLS 用于向后兼容
+CHAT_TOOLS = CORE_TOOLS + [
+    OPTIONAL_TOOLS["write_file"],
+    OPTIONAL_TOOLS["read_file"],
+    OPTIONAL_TOOLS["list_files"],
+    ALWAYS_ENABLED_TOOLS[0],
+]
+
+
+def get_enabled_chat_tools(
+    enable_write_file: bool = True,
+    enable_read_file: bool = True,
+    enable_list_files: bool = True,
+) -> list:
+    """
+    根据配置获取启用的工具列表。
+
+    Args:
+        enable_write_file: 是否启用 write_file 工具
+        enable_read_file: 是否启用 read_file 工具
+        enable_list_files: 是否启用 list_files 工具
+
+    Returns:
+        启用的工具列表
+    """
+    tools = CORE_TOOLS + ALWAYS_ENABLED_TOOLS
+
+    if enable_write_file:
+        tools.append(OPTIONAL_TOOLS["write_file"])
+    if enable_read_file:
+        tools.append(OPTIONAL_TOOLS["read_file"])
+    if enable_list_files:
+        tools.append(OPTIONAL_TOOLS["list_files"])
+
+    return tools

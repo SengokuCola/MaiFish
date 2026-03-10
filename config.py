@@ -15,7 +15,13 @@ load_dotenv()
 # ──────────────────── 模块开关配置 ────────────────────
 
 ENABLE_EMOTION_MODULE = os.getenv("ENABLE_EMOTION_MODULE", "true").strip().lower() == "true"
+ENABLE_COGNITION_MODULE = os.getenv("ENABLE_COGNITION_MODULE", "true").strip().lower() == "true"
+ENABLE_REFLECTION_MODULE = os.getenv("ENABLE_REFLECTION_MODULE", "true").strip().lower() == "true"
 ENABLE_TIMING_MODULE = os.getenv("ENABLE_TIMING_MODULE", "true").strip().lower() == "true"
+ENABLE_MCP = os.getenv("ENABLE_MCP", "true").strip().lower() == "true"
+ENABLE_WRITE_FILE = os.getenv("ENABLE_WRITE_FILE", "true").strip().lower() == "true"
+ENABLE_READ_FILE = os.getenv("ENABLE_READ_FILE", "true").strip().lower() == "true"
+ENABLE_LIST_FILES = os.getenv("ENABLE_LIST_FILES", "true").strip().lower() == "true"
 
 # ──────────────────── Rich 主题 & Console ────────────────────
 

@@ -13,12 +13,13 @@ from rich.markdown import Markdown
 from rich.text import Text
 from rich import box
 
-from config import console, ENABLE_EMOTION_MODULE, ENABLE_TIMING_MODULE
+from config import console, ENABLE_EMOTION_MODULE, ENABLE_COGNITION_MODULE, ENABLE_REFLECTION_MODULE, ENABLE_TIMING_MODULE, ENABLE_MCP
 from memory import get_memory_store
 from input_reader import InputReader
 from debug_client import DebugViewer
 from timing import build_timing_info
 from llm_service import BaseLLMService, OpenAILLMService
+from llm_service.utils import build_message, remove_last_perception
 from mcp_client import MCPManager
 from tool_handlers import (
     ToolHandlerContext,
@@ -130,6 +131,8 @@ class BufferCLI:
         确保 tool_calls 和 tool 响应消息成对删除，避免破坏 API 要求的配对关系。
         只删除完整的消息块（user/assistant + 可选的 tool 响应序列）。
 
+        保留最后 3 条非 tool 消息，避免删除可能还在处理中的内容。
+
         Returns:
             可以安全删除的消息索引列表（从后往前排序）
         """
@@ -137,7 +140,19 @@ class BufferCLI:
         removed_count = 0
         i = 0
 
-        while i < len(chat_history) and removed_count < count:
+        # 计算保留的消息数量（最后 3 条非 tool 消息）
+        safe_zone_count = 3
+        non_tool_count = 0
+        for msg in reversed(chat_history):
+            if msg.get("role") != "tool":
+                non_tool_count += 1
+            if non_tool_count >= safe_zone_count:
+                break
+
+        # 只处理前 (len - non_tool_count) 条消息
+        max_process_index = len(chat_history) - non_tool_count
+
+        while i < max_process_index and removed_count < count:
             msg = chat_history[i]
             role = msg.get("role", "")
 
@@ -233,6 +248,23 @@ class BufferCLI:
                     if 0 <= i < len(chat_history):
                         chat_history.pop(i)
 
+                # 清理"孤儿" tool 消息（没有对应 tool_calls 的 tool 消息）
+                valid_tool_call_ids = set()
+                for msg in chat_history:
+                    if msg.get("role") == "assistant" and "tool_calls" in msg:
+                        for tool_call in msg["tool_calls"]:
+                            valid_tool_call_ids.add(tool_call.get("id", ""))
+
+                # 删除无效的 tool 消息（从后往前）
+                i = len(chat_history) - 1
+                while i >= 0:
+                    msg = chat_history[i]
+                    if msg.get("role") == "tool":
+                        tool_call_id = msg.get("tool_call_id", "")
+                        if tool_call_id not in valid_tool_call_ids:
+                            chat_history.pop(i)
+                    i -= 1
+
     # ──────── 记忆查询模块 ────────
 
     async def _query_memory(self, chat_history: list) -> str:
@@ -247,23 +279,29 @@ class BufferCLI:
             # 分析记忆需求
             need_result = await self.llm_service.analyze_memory_need(chat_history)
 
+            # 显示记忆存储类型和状态
+            store_type = type(self._memory_store).__name__
+            all_memories = []
+            if hasattr(self._memory_store, "_memories"):
+                all_memories = self._memory_store._memories
+
+            # 无需查询
             if not need_result or "无需查询" in need_result:
+                console.print(f"[muted]🧠 记忆检索: 无需查询 (共{len(all_memories)}条记忆, 来源: {store_type})[/muted]")
                 return ""
 
             # 解析问句（每行一个）
             questions = [q.strip() for q in need_result.split("\n") if q.strip() and "无需查询" not in q]
             if not questions:
+                console.print(f"[muted]🧠 记忆检索: 未生成有效问题 (共{len(all_memories)}条记忆, 来源: {store_type})[/muted]")
                 return ""
 
             # 限制最多 3 个问句
             questions = questions[:3]
 
-            # 获取所有记忆（从文件存储）
-            all_memories = []
-            if hasattr(self._memory_store, "_memories"):
-                all_memories = self._memory_store._memories
-
+            # 没有记忆数据
             if not all_memories:
+                console.print(f"[muted]🧠 记忆检索: 记忆库为空 (来源: {store_type})[/muted]")
                 return ""
 
             # 用 LLM 选择相关记忆
@@ -271,7 +309,9 @@ class BufferCLI:
                 questions, all_memories
             )
 
+            # 没有选中记忆
             if not selected_indices:
+                console.print(f"[muted]🧠 记忆检索: {len(all_memories)}条记忆中未找到相关内容 (来源: {store_type})[/muted]")
                 return ""
 
             # 获取选中的记忆内容
@@ -284,7 +324,6 @@ class BufferCLI:
                         memory_results.append(content)
 
             # 显示查询统计
-            store_type = type(self._memory_store).__name__
             console.print(f"[muted]🧠 记忆检索: {len(all_memories)}条记忆中选中{len(selected_indices)}条 (来源: {store_type})[/muted]")
 
             if memory_results:
@@ -333,132 +372,179 @@ class BufferCLI:
         每轮流程：
         1. 上下文管理：达到上限时自动压缩
         2. 情商 + Timing + 记忆模块（并行）：分析用户情绪、对话时间节奏、查询相关记忆
+           *注：如果上次没有调用工具，跳过模块分析
         3. 调用主 LLM：基于完整上下文生成响应
         """
         consecutive_errors = 0
+        last_had_tool_calls = True  # 第一次循环总是执行模块分析
 
         while True:
             # ── 上下文管理 ──
             await self._manage_context_length(chat_history)
 
             # ── 情商模块 + Timing 模块 + 记忆需求分析（并行） ──
-            timing_info = build_timing_info(
-                self._chat_start_time,
-                self._last_user_input_time,
-                self._last_assistant_response_time,
-                self._user_input_times,
-            )
-
-            # 根据配置决定要执行的模块
-            tasks = []
-            status_text_parts = []
-
-            if ENABLE_EMOTION_MODULE:
-                tasks.append(("eq", self.llm_service.analyze_emotion(chat_history)))
-                status_text_parts.append("🎭")
-            if ENABLE_TIMING_MODULE:
-                tasks.append(("timing", self.llm_service.analyze_timing(chat_history, timing_info)))
-                status_text_parts.append("⏱️")
-            tasks.append(("memory", self._query_memory(chat_history)))
-            status_text_parts.append("🧠")
-
-            with console.status(
-                f"[info]{' '.join(status_text_parts)} {' + '.join(status_text_parts)} 模块并行分析中...[/info]",
-                spinner="dots",
-            ):
-                results = await asyncio.gather(*[task for _, task in tasks], return_exceptions=True)
-
-            # 解析结果
-            eq_result, timing_result, memory_result = None, None, None
-            result_idx = 0
-            if ENABLE_EMOTION_MODULE:
-                eq_result = results[result_idx]
-                result_idx += 1
-            if ENABLE_TIMING_MODULE:
-                timing_result = results[result_idx]
-                result_idx += 1
-            memory_result = results[result_idx]
-
-            # 处理情商模块结果
-            eq_analysis = ""
-            if ENABLE_EMOTION_MODULE:
-                if isinstance(eq_result, Exception):
-                    console.print(f"[warning]情商模块分析失败: {eq_result}[/warning]")
-                elif eq_result:
-                    eq_analysis = eq_result
-                    console.print(
-                        Panel(
-                            Markdown(eq_analysis),
-                            title="🎭 情绪感知",
-                            border_style="bright_yellow",
-                            padding=(0, 1),
-                            style="dim",
-                        )
-                    )
-
-            # 处理 Timing 模块结果
-            timing_analysis = ""
-            if ENABLE_TIMING_MODULE:
-                if isinstance(timing_result, Exception):
-                    console.print(f"[warning]Timing 模块分析失败: {timing_result}[/warning]")
-                elif timing_result:
-                    timing_analysis = timing_result
-                    console.print(
-                        Panel(
-                            Markdown(timing_analysis),
-                            title="⏱️ 时间感知",
-                            border_style="bright_blue",
-                            padding=(0, 1),
-                            style="dim",
-                        )
-                    )
-
-            # 处理记忆查询结果
-            memory_analysis = ""
-            if isinstance(memory_result, Exception):
-                console.print(f"[warning]记忆查询失败: {memory_result}[/warning]")
-            elif memory_result:
-                memory_analysis = memory_result
-                console.print(
-                    Panel(
-                        Markdown(memory_analysis),
-                        title="🧠 记忆检索",
-                        border_style="bright_green",
-                        padding=(0, 1),
-                        style="dim",
-                    )
+            # 只有上次调用了工具才重新分析（首次循环除外）
+            if last_had_tool_calls:
+                timing_info = build_timing_info(
+                    self._chat_start_time,
+                    self._last_user_input_time,
+                    self._last_assistant_response_time,
+                    self._user_input_times,
                 )
 
-            # 注入感知信息（作为 assistant 的感知消息）
-            # 感知标记：用于识别和删除旧的感知消息
-            PERCEPTION_TAG = "【AI 感知】"
+                # 根据配置决定要执行的模块
+                tasks = []
+                status_text_parts = []
 
-            # 移除上一条感知消息（如果存在）
-            for i in range(len(chat_history) - 1, -1, -1):
-                msg = chat_history[i]
-                if (
-                    msg.get("role") == "assistant"
-                    and isinstance(msg.get("content"), str)
-                    and PERCEPTION_TAG in msg["content"]
+                if ENABLE_EMOTION_MODULE:
+                    tasks.append(("eq", self.llm_service.analyze_emotion(chat_history)))
+                    status_text_parts.append("🎭")
+                if ENABLE_COGNITION_MODULE:
+                    tasks.append(("cognition", self.llm_service.analyze_cognition(chat_history)))
+                    status_text_parts.append("🧩")
+                if ENABLE_REFLECTION_MODULE:
+                    tasks.append(("reflection", self.llm_service.analyze_reflection(chat_history)))
+                    status_text_parts.append("🪞")
+                if ENABLE_TIMING_MODULE:
+                    tasks.append(("timing", self.llm_service.analyze_timing(chat_history, timing_info)))
+                    status_text_parts.append("⏱️")
+                tasks.append(("memory", self._query_memory(chat_history)))
+                status_text_parts.append("🧠")
+
+                with console.status(
+                    f"[info]{' '.join(status_text_parts)} {' + '.join(status_text_parts)} 模块并行分析中...[/info]",
+                    spinner="dots",
                 ):
-                    chat_history.pop(i)
-                    break
+                    results = await asyncio.gather(*[task for _, task in tasks], return_exceptions=True)
 
-            # 构建感知内容
-            perception_parts = []
-            if eq_analysis:
-                perception_parts.append(f"📊 情绪感知\n{eq_analysis}")
-            if timing_analysis:
-                perception_parts.append(f"⏰ 时间感知\n{timing_analysis}")
-            if memory_analysis:
-                perception_parts.append(f"🧠 记忆检索\n{memory_analysis}")
+                # 解析结果
+                eq_result, cognition_result, reflection_result, timing_result, memory_result = None, None, None, None, None
+                result_idx = 0
+                if ENABLE_EMOTION_MODULE:
+                    eq_result = results[result_idx]
+                    result_idx += 1
+                if ENABLE_COGNITION_MODULE:
+                    cognition_result = results[result_idx]
+                    result_idx += 1
+                if ENABLE_REFLECTION_MODULE:
+                    reflection_result = results[result_idx]
+                    result_idx += 1
+                if ENABLE_TIMING_MODULE:
+                    timing_result = results[result_idx]
+                    result_idx += 1
+                memory_result = results[result_idx]
 
-            if perception_parts:
-                # 添加感知消息（AI 的感知能力结果）
-                chat_history.append({
-                    "role": "assistant",
-                    "content": f"{PERCEPTION_TAG}\n\n" + "\n\n".join(perception_parts),
-                })
+                # 处理情商模块结果
+                eq_analysis = ""
+                if ENABLE_EMOTION_MODULE:
+                    if isinstance(eq_result, Exception):
+                        console.print(f"[warning]情商模块分析失败: {eq_result}[/warning]")
+                    elif eq_result:
+                        eq_analysis = eq_result
+                        console.print(
+                            Panel(
+                                Markdown(eq_analysis),
+                                title="🎭 情绪感知",
+                                border_style="bright_yellow",
+                                padding=(0, 1),
+                                style="dim",
+                            )
+                        )
+
+                # 处理认知模块结果
+                cognition_analysis = ""
+                if ENABLE_COGNITION_MODULE:
+                    if isinstance(cognition_result, Exception):
+                        console.print(f"[warning]认知模块分析失败: {cognition_result}[/warning]")
+                    elif cognition_result:
+                        cognition_analysis = cognition_result
+                        console.print(
+                            Panel(
+                                Markdown(cognition_analysis),
+                                title="🧩 意图感知",
+                                border_style="bright_cyan",
+                                padding=(0, 1),
+                                style="dim",
+                            )
+                        )
+
+                # 处理自我反思模块结果
+                reflection_analysis = ""
+                if ENABLE_REFLECTION_MODULE:
+                    if isinstance(reflection_result, Exception):
+                        console.print(f"[warning]自我反思模块分析失败: {reflection_result}[/warning]")
+                    elif reflection_result:
+                        reflection_analysis = reflection_result
+                        console.print(
+                            Panel(
+                                Markdown(reflection_analysis),
+                                title="🪞 自我反思",
+                                border_style="bright_magenta",
+                                padding=(0, 1),
+                                style="dim",
+                            )
+                        )
+
+                # 处理 Timing 模块结果
+                timing_analysis = ""
+                if ENABLE_TIMING_MODULE:
+                    if isinstance(timing_result, Exception):
+                        console.print(f"[warning]Timing 模块分析失败: {timing_result}[/warning]")
+                    elif timing_result:
+                        timing_analysis = timing_result
+                        console.print(
+                            Panel(
+                                Markdown(timing_analysis),
+                                title="⏱️ 时间感知",
+                                border_style="bright_blue",
+                                padding=(0, 1),
+                                style="dim",
+                            )
+                        )
+
+                # 处理记忆查询结果
+                memory_analysis = ""
+                if isinstance(memory_result, Exception):
+                    console.print(f"[warning]记忆查询失败: {memory_result}[/warning]")
+                elif memory_result:
+                    memory_analysis = memory_result
+                    console.print(
+                        Panel(
+                            Markdown(memory_analysis),
+                            title="🧠 记忆检索",
+                            border_style="bright_green",
+                            padding=(0, 1),
+                            style="dim",
+                        )
+                    )
+
+                # 注入感知信息（作为 assistant 的感知消息）
+                # 移除上一条感知消息（如果存在）
+                remove_last_perception(chat_history)
+
+                # 构建感知内容
+                perception_parts = []
+                if eq_analysis:
+                    perception_parts.append(f"情绪感知\n{eq_analysis}")
+                if cognition_analysis:
+                    perception_parts.append(f"意图感知\n{cognition_analysis}")
+                if reflection_analysis:
+                    perception_parts.append(f"自我反思\n{reflection_analysis}")
+                if timing_analysis:
+                    perception_parts.append(f"时间感知\n{timing_analysis}")
+                if memory_analysis:
+                    perception_parts.append(f"记忆检索\n{memory_analysis}")
+
+                if perception_parts:
+                    # 添加感知消息（AI 的感知能力结果）
+                    chat_history.append(build_message(
+                        role="assistant",
+                        content="\n\n".join(perception_parts),
+                        msg_type="perception",
+                    ))
+            else:
+                # 上次没有调用工具，跳过模块分析
+                console.print("[muted]ℹ️  上次未调用工具，跳过模块分析[/muted]")
 
 
             # ── 调用 LLM ──
@@ -533,8 +619,13 @@ class BufferCLI:
                     console.print("[muted]对话暂停，等待新输入...[/muted]\n")
                     break
 
-            # LLM 未调用任何工具 → 继续下一轮思考
-            # （不做任何额外操作，直接回到循环顶部再次调用 LLM）
+                # 调用了工具，下次循环需要重新分析模块
+                last_had_tool_calls = True
+            else:
+                # LLM 未调用任何工具 → 继续下一轮思考
+                # （不做任何额外操作，直接回到循环顶部再次调用 LLM）
+                # 标记上次没有调用工具，下次循环跳过模块分析
+                last_had_tool_calls = False
 
     # ──────── 主循环 ────────
 
@@ -564,8 +655,11 @@ class BufferCLI:
         # 启动调试窗口
         self._debug_viewer.start()
 
-        # 初始化 MCP 服务器（连接、发现工具、注入到 LLM）
-        await self._init_mcp()
+        # 根据配置决定是否初始化 MCP 服务器
+        if ENABLE_MCP:
+            await self._init_mcp()
+        else:
+            console.print("[muted]🔌 MCP 已禁用 (ENABLE_MCP=false)[/muted]")
 
         # 启动异步输入读取器
         self._reader.start(asyncio.get_event_loop())

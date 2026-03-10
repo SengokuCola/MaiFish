@@ -17,6 +17,7 @@ from config import console
 from input_reader import InputReader
 from llm_service import BaseLLMService
 from memory import get_memory_store
+from say_rewriter import SayRewriter
 
 if TYPE_CHECKING:
     from mcp_client import MCPManager
@@ -24,6 +25,19 @@ if TYPE_CHECKING:
 
 # mai_files 目录路径
 MAI_FILES_DIR = Path(os.path.join(os.path.dirname(os.path.abspath(__file__)), "mai_files"))
+
+# 全局 say 改写器
+_say_rewriter: Optional[SayRewriter] = None
+
+
+def get_say_rewriter(llm_service: BaseLLMService) -> SayRewriter:
+    """获取 say 改写器实例（单例模式）"""
+    global _say_rewriter
+    if _say_rewriter is None:
+        _say_rewriter = SayRewriter(llm_service)
+    elif _say_rewriter._llm_service is None:
+        _say_rewriter.set_llm_service(llm_service)
+    return _say_rewriter
 
 
 class ToolHandlerContext:
@@ -62,7 +76,8 @@ async def handle_say(tc, chat_history: list, ctx: ToolHandlerContext):
             "[info]✏️ 风格改写中...[/info]",
             spinner="dots",
         ):
-            rewritten = await ctx.llm_service.rewrite_say(say_text)
+            rewriter = get_say_rewriter(ctx.llm_service)
+            rewritten = await rewriter.rewrite(say_text)
         console.print(
             Panel(
                 Markdown(rewritten),
@@ -401,6 +416,15 @@ async def handle_store_context(tc, chat_history: list, ctx: ToolHandlerContext):
 
         # 检查这是否是一个带 tool_calls 的 assistant 消息
         if role == "assistant" and "tool_calls" in msg:
+            # 检查这个消息是否包含当前的 tool_call（store_context 自己）
+            # 如果包含，跳过不删除（否则会导致 tool 响应孤儿）
+            contains_current_call = any(
+                tc.get("id") == tc.id for tc in msg.get("tool_calls", [])
+            )
+            if contains_current_call:
+                i += 1
+                continue
+
             # 收集这个 assistant 消息及其后续的 tool 响应消息
             block_indices = [i]
             j = i + 1
