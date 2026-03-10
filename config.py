@@ -23,12 +23,6 @@ ENABLE_WRITE_FILE = os.getenv("ENABLE_WRITE_FILE", "true").strip().lower() == "t
 ENABLE_READ_FILE = os.getenv("ENABLE_READ_FILE", "true").strip().lower() == "true"
 ENABLE_LIST_FILES = os.getenv("ENABLE_LIST_FILES", "true").strip().lower() == "true"
 
-# ──────────────────── QQ 工具配置 ────────────────────
-
-ENABLE_QQ_TOOLS = os.getenv("ENABLE_QQ_TOOLS", "false").strip().lower() == "true"
-QQ_API_BASE_URL = os.getenv("QQ_API_BASE_URL", "").strip()
-QQ_API_KEY = os.getenv("QQ_API_KEY", "").strip()
-
 # ──────────────────── Rich 主题 & Console ────────────────────
 
 custom_theme = Theme(
