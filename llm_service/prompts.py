@@ -53,21 +53,6 @@ CORE_TOOLS = [
             },
         },
     },
-    {
-        "type": "function",
-        "function": {
-            "name": "stop",
-            "description": (
-                "结束当前对话循环，进入待机状态。"
-                "调用后主循环会停止，直到用户下次输入新内容时重新唤醒。"
-                "适合在对话自然结束、用户不再回复、或深夜等不适合继续聊天时使用。"
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {},
-            },
-        },
-    },
 ]
 
 # 可选工具（可通过配置启用/禁用）
@@ -223,6 +208,33 @@ ALWAYS_ENABLED_TOOLS = [
                     },
                 },
                 "required": ["count", "reason"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "switch_mode",
+            "description": (
+                "切换主 Agent 当前的行为模式。"
+                "模式必须是 \"free\" 或 \"social\" 之一："
+                "  - free: 自主 / 自由行动模式，适合自己探索、执行任务；"
+                "  - social: 与人类对话的社交模式，此时可以更关注情绪与共情。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "mode": {
+                        "type": "string",
+                        "enum": ["free", "social"],
+                        "description": "目标模式，只能是 \"free\" 或 \"social\"。",
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "可选的切换原因说明，方便后续理解你为何切换模式。",
+                    },
+                },
+                "required": ["mode"],
             },
         },
     },

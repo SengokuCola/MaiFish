@@ -1,20 +1,14 @@
 """
 MaiSaka - 工具调用处理器
-处理 LLM 循环中各工具（say/wait/stop/file/MCP/QQ）的执行逻辑。
+处理 LLM 循环中各工具（say/wait/file/MCP/QQ）的执行逻辑。
 """
 
 import json as _json
-import asyncio
 import os
 from datetime import datetime
 from typing import TYPE_CHECKING, Optional
 from pathlib import Path
 import importlib.util
-
-# 检查 aiohttp 是否可用
-AIOHTTP_AVAILABLE = importlib.util.find_spec("aiohttp") is not None
-if AIOHTTP_AVAILABLE:
-    import aiohttp
 
 from rich.panel import Panel
 from rich.markdown import Markdown
@@ -24,9 +18,16 @@ from input_reader import InputReader
 from llm_service import BaseLLMService
 from memory import get_memory_store
 from say_rewriter import SayRewriter
+from agent_state import agent_state, tool_switch_mode
 
 if TYPE_CHECKING:
     from mcp_client import MCPManager
+
+
+# 检查 aiohttp 是否可用（放在所有导入之后，避免 lint 警告）
+AIOHTTP_AVAILABLE = importlib.util.find_spec("aiohttp") is not None
+if AIOHTTP_AVAILABLE:
+    import aiohttp
 
 
 # mai_files 目录路径
@@ -106,16 +107,6 @@ async def handle_say(tc, chat_history: list, ctx: ToolHandlerContext):
         })
 
 
-async def handle_stop(tc, chat_history: list):
-    """处理 stop 工具：结束对话循环。"""
-    console.print("[accent]🔧 调用工具: stop()[/accent]")
-    chat_history.append({
-        "role": "tool",
-        "tool_call_id": tc.id,
-        "content": "对话循环已停止，等待用户下次输入。",
-    })
-
-
 async def handle_wait(tc, chat_history: list, ctx: ToolHandlerContext) -> str:
     """
     处理 wait 工具：等待用户输入或超时。
@@ -145,15 +136,21 @@ async def _do_wait(seconds: int, ctx: ToolHandlerContext) -> str:
     user_input = await ctx.reader.get_line(timeout=seconds)
 
     if user_input is None:
-        # 超时
+        # 超时：说明当前暂时没有真实用户交互，切回 free 模式
         console.print()  # 换行
         console.print("[muted]⏳ 等待超时[/muted]")
+        agent_state.to_free(reason="等待用户输入超时")
         return "等待超时，用户未输入任何内容"
 
     user_input = user_input.strip()
 
     if not user_input:
+        # 有输入但为空，一般仍视为在对话中，保持 social 模式
+        agent_state.to_social(reason="用户发送了空消息")
         return "用户发送了空消息"
+
+    # 有真实的用户输入，切换为 social 模式
+    agent_state.to_social(reason="收到用户输入")
 
     # 更新 timing 时间戳
     now = datetime.now()
@@ -164,6 +161,36 @@ async def _do_wait(seconds: int, ctx: ToolHandlerContext) -> str:
         return "[[QUIT]] 用户主动退出了对话"
 
     return f"用户说：{user_input}"
+
+
+async def handle_switch_mode(tc, chat_history: list):
+    """
+    处理 switch_mode 工具：主动切换主 Agent 的模式。
+
+    参数：
+    - mode: "free" 或 "social"
+    - reason: 可选的切换原因说明
+    """
+    mode = tc.arguments.get("mode", "free")
+    reason = tc.arguments.get("reason", "")
+    console.print(f"[accent]🔧 调用工具: switch_mode(mode=\"{mode}\", reason=\"{reason}\")[/accent]")
+
+    try:
+        result = tool_switch_mode(mode, reason or None)
+        debug = agent_state.debug_info()
+        chat_history.append({
+            "role": "tool",
+            "tool_call_id": tc.id,
+            "content": f"{result}\n当前状态: {debug}",
+        })
+    except Exception as e:
+        error_msg = f"切换状态失败: {e}"
+        console.print(f"[error]{error_msg}[/error]")
+        chat_history.append({
+            "role": "tool",
+            "tool_call_id": tc.id,
+            "content": error_msg,
+        })
 
 
 async def handle_mcp_tool(tc, chat_history: list, mcp_manager: "MCPManager"):
@@ -424,8 +451,10 @@ async def handle_store_context(tc, chat_history: list, ctx: ToolHandlerContext):
         if role == "assistant" and "tool_calls" in msg:
             # 检查这个消息是否包含当前的 tool_call（store_context 自己）
             # 如果包含，跳过不删除（否则会导致 tool 响应孤儿）
+            current_tool_call_id = tc.id
             contains_current_call = any(
-                tc.get("id") == tc.id for tc in msg.get("tool_calls", [])
+                tool_call.get("id") == current_tool_call_id
+                for tool_call in msg.get("tool_calls", [])
             )
             if contains_current_call:
                 i += 1

@@ -24,7 +24,6 @@ from mcp_client import MCPManager
 from tool_handlers import (
     ToolHandlerContext,
     handle_say,
-    handle_stop,
     handle_wait,
     handle_write_file,
     handle_read_file,
@@ -35,7 +34,9 @@ from tool_handlers import (
     handle_get_qq_chat_info,
     handle_send_info,
     handle_list_qq_chats,
+    handle_switch_mode,
 )
+from agent_state import agent_state
 
 
 class BufferCLI:
@@ -369,7 +370,6 @@ class BufferCLI:
         LLM 持续运行，每步可能输出文本（内心思考）和/或调用工具：
         - say(text): 对用户说话
         - wait(seconds): 暂停等待用户输入，超时或收到输入后继续
-        - stop(): 结束循环，进入待机，直到用户下次输入
         - 不调用工具: 继续下一轮思考/生成
 
         每轮流程：
@@ -399,7 +399,8 @@ class BufferCLI:
                 tasks = []
                 status_text_parts = []
 
-                if ENABLE_EMOTION_MODULE:
+                # 只有在 social 模式下才运行情商模块
+                if ENABLE_EMOTION_MODULE and agent_state.is_social():
                     tasks.append(("eq", self.llm_service.analyze_emotion(chat_history)))
                     status_text_parts.append("🎭")
                 if ENABLE_COGNITION_MODULE:
@@ -587,11 +588,6 @@ class BufferCLI:
                 for tc in response.tool_calls:
                     if tc.name == "say":
                         await handle_say(tc, chat_history, ctx)
-
-                    elif tc.name == "stop":
-                        await handle_stop(tc, chat_history)
-                        should_stop = True
-
                     elif tc.name == "wait":
                         tool_result = await handle_wait(tc, chat_history, ctx)
                         # 同步回 timing 时间戳
@@ -620,6 +616,9 @@ class BufferCLI:
 
                     elif tc.name == "list_qq_chats":
                         await handle_list_qq_chats(tc, chat_history)
+
+                    elif tc.name == "switch_mode":
+                        await handle_switch_mode(tc, chat_history)
 
                     elif self._mcp_manager and self._mcp_manager.is_mcp_tool(tc.name):
                         await handle_mcp_tool(tc, chat_history, self._mcp_manager)
