@@ -13,11 +13,13 @@ from rich.markdown import Markdown
 from rich.text import Text
 from rich import box
 
-from config import console, ENABLE_EMOTION_MODULE, ENABLE_COGNITION_MODULE, ENABLE_REFLECTION_MODULE, ENABLE_TIMING_MODULE, ENABLE_MCP
+from config import console, ENABLE_EMOTION_MODULE, ENABLE_COGNITION_MODULE, ENABLE_TIMING_MODULE, ENABLE_KNOWLEDGE_MODULE, ENABLE_MEMORY_MODULE, ENABLE_MCP, get_mock_memory_store
 from memory import get_memory_store
 from input_reader import InputReader
 from debug_client import DebugViewer
 from timing import build_timing_info
+from knowledge import store_knowledge_from_context, retrieve_relevant_knowledge, build_knowledge_summary
+from knowledge_store import get_knowledge_store
 from llm_service import BaseLLMService, OpenAILLMService
 from llm_service.utils import build_message, remove_last_perception
 from mcp_client import MCPManager
@@ -45,16 +47,30 @@ class BufferCLI:
         self.llm_service: Optional[BaseLLMService] = None
         self._reader = InputReader()
         self._chat_history: Optional[list] = None  # 持久化的对话历史
-        self._memory_store = get_memory_store()  # 记忆存储实例
+        # 根据配置决定是否启用记忆功能
+        if ENABLE_MEMORY_MODULE:
+            self._memory_store = get_memory_store()  # 记忆存储实例
+        else:
+            self._memory_store = get_mock_memory_store()  # 使用 Mock 存储
+        self._knowledge_store = get_knowledge_store()  # 了解存储实例
 
         # 显示记忆存储类型
         store_type = type(self._memory_store).__name__
         from config import console
-        if "Mock" in store_type:
+        if not ENABLE_MEMORY_MODULE:
+            console.print("[warning]⚠️ 记忆系统: 已禁用 (ENABLE_MEMORY_MODULE=false)[/warning]")
+        elif "Mock" in store_type:
             console.print("[warning]⚠️ 记忆系统: Mock 存储（A_Memorix 未加载）[/warning]")
             console.print("[muted]  记忆功能将不会持久化，请检查 A_Memorix 配置[/muted]")
         else:
             console.print(f"[success]✓ 记忆系统: {store_type}[/success]")
+
+        # 显示了解存储统计
+        knowledge_stats = self._knowledge_store.get_stats()
+        if knowledge_stats["total_items"] > 0:
+            console.print(f"[success]✓ 了解系统: {knowledge_stats['total_items']}条特征信息[/success]")
+        else:
+            console.print("[muted]✓ 了解系统: 已初始化 (暂无数据)[/muted]")
         # Timing 模块时间戳跟踪
         self._chat_start_time: Optional[datetime] = None
         self._last_user_input_time: Optional[datetime] = None
@@ -221,28 +237,56 @@ class BufferCLI:
                     try:
                         console.print("[accent]🧠 上下文过长，正在压缩并存入记忆...[/accent]")
                         summary = await self.llm_service.summarize_context(to_compress)
+
+                        # 存储了解信息（如果启用）
+                        if ENABLE_KNOWLEDGE_MODULE:
+                            try:
+                                knowledge_count = await store_knowledge_from_context(
+                                    self.llm_service,
+                                    to_compress,
+                                    store_result_callback=lambda cat_id, cat_name, content: console.print(
+                                        f"[muted]  ✓ 存储了解信息: {cat_name}[/muted]"
+                                    )
+                                )
+                                if knowledge_count > 0:
+                                    console.print(f"[success]✓ 了解模块: 存储{knowledge_count}条特征信息[/success]")
+                            except Exception as e:
+                                console.print(f"[warning]了解存储失败: {e}[/warning]")
                         if summary:
                             # 存入记忆
-                            store_result = await self._memory_store.store_memory(
-                                summary,
-                                metadata={"type": "context_summary", "timestamp": datetime.now().isoformat()},
-                            )
-                            # 显示存储结果
-                            store_type = type(self._memory_store).__name__
-                            if store_result:
-                                console.print(f"[success]✅ 记忆存储成功 ({store_type})[/success]")
-                            else:
-                                console.print(f"[warning]⚠️ 记忆存储失败 - 使用了 {store_type}[/warning]")
-
-                            console.print(
-                                Panel(
-                                    Markdown(summary),
-                                    title="🧠 上下文已压缩并存入记忆",
-                                    border_style="green",
-                                    padding=(0, 1),
-                                    style="dim",
+                            store_result = False
+                            if ENABLE_MEMORY_MODULE:
+                                store_result = await self._memory_store.store_memory(
+                                    summary,
+                                    metadata={"type": "context_summary", "timestamp": datetime.now().isoformat()},
                                 )
-                            )
+                                # 显示存储结果
+                                store_type = type(self._memory_store).__name__
+                                if store_result:
+                                    console.print(f"[success]✅ 记忆存储成功 ({store_type})[/success]")
+                                else:
+                                    console.print(f"[warning]⚠️ 记忆存储失败 - 使用了 {store_type}[/warning]")
+
+                                console.print(
+                                    Panel(
+                                        Markdown(summary),
+                                        title="🧠 上下文已压缩并存入记忆",
+                                        border_style="green",
+                                        padding=(0, 1),
+                                        style="dim",
+                                    )
+                                )
+                            else:
+                                # 记忆模块禁用时，只显示压缩结果，不存储
+                                console.print(
+                                    Panel(
+                                        Markdown(summary),
+                                        title="📝 上下文已压缩 (记忆模块已禁用)",
+                                        border_style="yellow",
+                                        padding=(0, 1),
+                                        style="dim",
+                                    )
+                                )
                     except Exception as e:
                         console.print(f"[warning]上下文总结失败: {e}[/warning]")
 
@@ -405,14 +449,17 @@ class BufferCLI:
                 if ENABLE_COGNITION_MODULE:
                     tasks.append(("cognition", self.llm_service.analyze_cognition(chat_history)))
                     status_text_parts.append("🧩")
-                if ENABLE_REFLECTION_MODULE:
-                    tasks.append(("reflection", self.llm_service.analyze_reflection(chat_history)))
-                    status_text_parts.append("🪞")
                 if ENABLE_TIMING_MODULE:
                     tasks.append(("timing", self.llm_service.analyze_timing(chat_history, timing_info)))
+                    status_text_parts.append("⏱️🪞")
+                    tasks.append(("timing", self.llm_service.analyze_timing(chat_history, timing_info)))
                     status_text_parts.append("⏱️")
-                tasks.append(("memory", self._query_memory(chat_history)))
-                status_text_parts.append("🧠")
+                if ENABLE_KNOWLEDGE_MODULE:
+                    tasks.append(("knowledge", retrieve_relevant_knowledge(self.llm_service, chat_history)))
+                    status_text_parts.append("👤")
+                if ENABLE_MEMORY_MODULE:
+                    tasks.append(("memory", self._query_memory(chat_history)))
+                    status_text_parts.append("🧠")
 
                 with console.status(
                     f"[info]{' '.join(status_text_parts)} {' + '.join(status_text_parts)} 模块并行分析中...[/info]",
@@ -421,7 +468,7 @@ class BufferCLI:
                     results = await asyncio.gather(*[task for _, task in tasks], return_exceptions=True)
 
                 # 解析结果
-                eq_result, cognition_result, reflection_result, timing_result, memory_result = None, None, None, None, None
+                eq_result, cognition_result, timing_result, knowledge_result, memory_result = None, None, None, None, None
                 result_idx = 0
                 if ENABLE_EMOTION_MODULE:
                     eq_result = results[result_idx]
@@ -429,13 +476,15 @@ class BufferCLI:
                 if ENABLE_COGNITION_MODULE:
                     cognition_result = results[result_idx]
                     result_idx += 1
-                if ENABLE_REFLECTION_MODULE:
-                    reflection_result = results[result_idx]
-                    result_idx += 1
                 if ENABLE_TIMING_MODULE:
                     timing_result = results[result_idx]
                     result_idx += 1
-                memory_result = results[result_idx]
+                if ENABLE_KNOWLEDGE_MODULE:
+                    knowledge_result = results[result_idx]
+                    result_idx += 1
+                if ENABLE_MEMORY_MODULE:
+                    memory_result = results[result_idx]
+                    result_idx += 1
 
                 # 处理情商模块结果
                 eq_analysis = ""
@@ -471,24 +520,7 @@ class BufferCLI:
                             )
                         )
 
-                # 处理自我反思模块结果
-                reflection_analysis = ""
-                if ENABLE_REFLECTION_MODULE:
-                    if isinstance(reflection_result, Exception):
-                        console.print(f"[warning]自我反思模块分析失败: {reflection_result}[/warning]")
-                    elif reflection_result:
-                        reflection_analysis = reflection_result
-                        console.print(
-                            Panel(
-                                Markdown(reflection_analysis),
-                                title="🪞 自我反思",
-                                border_style="bright_magenta",
-                                padding=(0, 1),
-                                style="dim",
-                            )
-                        )
-
-                # 处理 Timing 模块结果
+                # 处理 Timing 模块结果（含自我反思功能）
                 timing_analysis = ""
                 if ENABLE_TIMING_MODULE:
                     if isinstance(timing_result, Exception):
@@ -498,7 +530,7 @@ class BufferCLI:
                         console.print(
                             Panel(
                                 Markdown(timing_analysis),
-                                title="⏱️ 时间感知",
+                                title="⏱️🪞 时间感知 & 自我反思",
                                 border_style="bright_blue",
                                 padding=(0, 1),
                                 style="dim",
@@ -507,19 +539,37 @@ class BufferCLI:
 
                 # 处理记忆查询结果
                 memory_analysis = ""
-                if isinstance(memory_result, Exception):
-                    console.print(f"[warning]记忆查询失败: {memory_result}[/warning]")
-                elif memory_result:
-                    memory_analysis = memory_result
-                    console.print(
-                        Panel(
-                            Markdown(memory_analysis),
-                            title="🧠 记忆检索",
-                            border_style="bright_green",
-                            padding=(0, 1),
-                            style="dim",
+                if ENABLE_MEMORY_MODULE:
+                    if isinstance(memory_result, Exception):
+                        console.print(f"[warning]记忆查询失败: {memory_result}[/warning]")
+                    elif memory_result:
+                        memory_analysis = memory_result
+                        console.print(
+                            Panel(
+                                Markdown(memory_analysis),
+                                title="🧠 记忆检索",
+                                border_style="bright_green",
+                                padding=(0, 1),
+                                style="dim",
+                            )
                         )
-                    )
+
+                # 处理了解模块结果
+                knowledge_analysis = ""
+                if ENABLE_KNOWLEDGE_MODULE:
+                    if isinstance(knowledge_result, Exception):
+                        console.print(f"[warning]了解模块分析失败: {knowledge_result}[/warning]")
+                    elif knowledge_result:
+                        knowledge_analysis = knowledge_result
+                        console.print(
+                            Panel(
+                                Markdown(knowledge_analysis),
+                                title="👤 用户特征",
+                                border_style="bright_magenta",
+                                padding=(0, 1),
+                                style="dim",
+                            )
+                        )
 
                 # 注入感知信息（作为 assistant 的感知消息）
                 # 移除上一条感知消息（如果存在）
@@ -531,10 +581,10 @@ class BufferCLI:
                     perception_parts.append(f"情绪感知\n{eq_analysis}")
                 if cognition_analysis:
                     perception_parts.append(f"意图感知\n{cognition_analysis}")
-                if reflection_analysis:
-                    perception_parts.append(f"自我反思\n{reflection_analysis}")
                 if timing_analysis:
-                    perception_parts.append(f"时间感知\n{timing_analysis}")
+                    perception_parts.append(f"时间感知 & 自我反思\n{timing_analysis}")
+                if knowledge_analysis:
+                    perception_parts.append(f"用户特征\n{knowledge_analysis}")
                 if memory_analysis:
                     perception_parts.append(f"记忆检索\n{memory_analysis}")
 

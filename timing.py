@@ -1,6 +1,7 @@
 """
-MaiSaka - Timing 模块
+MaiSaka - Timing 模块（含自我反思功能）
 构建对话时间戳信息，供 Timing 分析模块使用。
+该模块同时负责分析对话的时间维度和进行自我反思分析。
 """
 
 from datetime import datetime

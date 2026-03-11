@@ -16,8 +16,10 @@ load_dotenv()
 
 ENABLE_EMOTION_MODULE = os.getenv("ENABLE_EMOTION_MODULE", "true").strip().lower() == "true"
 ENABLE_COGNITION_MODULE = os.getenv("ENABLE_COGNITION_MODULE", "true").strip().lower() == "true"
-ENABLE_REFLECTION_MODULE = os.getenv("ENABLE_REFLECTION_MODULE", "true").strip().lower() == "true"
+# Timing 模块已包含自我反思功能
 ENABLE_TIMING_MODULE = os.getenv("ENABLE_TIMING_MODULE", "true").strip().lower() == "true"
+ENABLE_KNOWLEDGE_MODULE = os.getenv("ENABLE_KNOWLEDGE_MODULE", "true").strip().lower() == "true"
+ENABLE_MEMORY_MODULE = os.getenv("ENABLE_MEMORY_MODULE", "true").strip().lower() == "true"
 ENABLE_MCP = os.getenv("ENABLE_MCP", "true").strip().lower() == "true"
 ENABLE_WRITE_FILE = os.getenv("ENABLE_WRITE_FILE", "true").strip().lower() == "true"
 ENABLE_READ_FILE = os.getenv("ENABLE_READ_FILE", "true").strip().lower() == "true"
@@ -41,5 +43,18 @@ custom_theme = Theme(
         "accent": "bold magenta",
     }
 )
+
+def get_mock_memory_store():
+    """当记忆模块禁用时，返回 Mock 存储"""
+    class MockMemoryStore:
+        def __init__(self):
+            self._memories = []
+        async def store_memory(self, content, metadata=None):
+            return False
+        async def get_all_memories(self):
+            return []
+        async def clear_all(self):
+            pass
+    return MockMemoryStore()
 
 console = Console(theme=custom_theme)

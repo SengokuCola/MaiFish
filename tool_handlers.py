@@ -19,11 +19,11 @@ if AIOHTTP_AVAILABLE:
 from rich.panel import Panel
 from rich.markdown import Markdown
 
-from config import console
+from config import console, ENABLE_MEMORY_MODULE
 from input_reader import InputReader
 from llm_service import BaseLLMService
 from memory import get_memory_store
-from say_rewriter import SayRewriter
+from replyer import Replyer
 
 if TYPE_CHECKING:
     from mcp_client import MCPManager
@@ -32,18 +32,18 @@ if TYPE_CHECKING:
 # mai_files 目录路径
 MAI_FILES_DIR = Path(os.path.join(os.path.dirname(os.path.abspath(__file__)), "mai_files"))
 
-# 全局 say 改写器
-_say_rewriter: Optional[SayRewriter] = None
+# 全局回复器
+_replyer: Optional[Replyer] = None
 
 
-def get_say_rewriter(llm_service: BaseLLMService) -> SayRewriter:
-    """获取 say 改写器实例（单例模式）"""
-    global _say_rewriter
-    if _say_rewriter is None:
-        _say_rewriter = SayRewriter(llm_service)
-    elif _say_rewriter._llm_service is None:
-        _say_rewriter.set_llm_service(llm_service)
-    return _say_rewriter
+def get_replyer(llm_service: BaseLLMService) -> Replyer:
+    """获取回复器实例（单例模式）"""
+    global _replyer
+    if _replyer is None:
+        _replyer = Replyer(llm_service)
+    elif _replyer._llm_service is None:
+        _replyer.set_llm_service(llm_service)
+    return _replyer
 
 
 class ToolHandlerContext:
@@ -62,47 +62,47 @@ class ToolHandlerContext:
 
 
 async def handle_say(tc, chat_history: list, ctx: ToolHandlerContext):
-    """处理 say 工具：改写文本后展示给用户。"""
-    say_text = tc.arguments.get("text", "")
+    """处理 say 工具：根据想法和上下文生成回复后展示给用户。"""
+    reason = tc.arguments.get("reason", "")
     console.print("[accent]🔧 调用工具: say(...)[/accent]")
 
-    if say_text:
-        # 原文以淡色展示
+    if reason:
+        # 想法以淡色展示
         console.print(
             Panel(
-                Markdown(say_text),
-                title="💭 say 原文",
+                Markdown(reason),
+                title="💭 回复想法",
                 border_style="dim",
                 padding=(0, 1),
                 style="dim",
             )
         )
-        # 过一遍 LLM 改写为贴吧风格
+        # 根据想法和上下文生成回复
         with console.status(
-            "[info]✏️ 风格改写中...[/info]",
+            "[info]✏️ 生成回复中...[/info]",
             spinner="dots",
         ):
-            rewriter = get_say_rewriter(ctx.llm_service)
-            rewritten = await rewriter.rewrite(say_text)
+            replyer = get_replyer(ctx.llm_service)
+            reply = await replyer.reply(reason, chat_history)
         console.print(
             Panel(
-                Markdown(rewritten),
+                Markdown(reply),
                 title="💬 MaiSaka",
                 border_style="magenta",
                 padding=(1, 2),
             )
         )
-        # 改写后的结果作为 tool 结果写入上下文
+        # 生成的回复作为 tool 结果写入上下文
         chat_history.append({
             "role": "tool",
             "tool_call_id": tc.id,
-            "content": f"已向用户展示（实际输出）：{rewritten}",
+            "content": f"已向用户展示（实际输出）：{reply}",
         })
     else:
         chat_history.append({
             "role": "tool",
             "tool_call_id": tc.id,
-            "content": "say 内容为空，未展示",
+            "content": "reason 内容为空，未展示",
         })
 
 
@@ -476,43 +476,59 @@ async def handle_store_context(tc, chat_history: list, ctx: ToolHandlerContext):
             summary = await ctx.llm_service.summarize_context(to_compress)
 
             if summary:
-                # 存入记忆
-                memory_store = get_memory_store()
+                # 根据配置决定是否存入记忆
+                result = False
+                if ENABLE_MEMORY_MODULE:
+                    # 存入记忆
+                    memory_store = get_memory_store()
 
-                # 调试输出：显示使用的记忆存储类型
-                store_type = type(memory_store).__name__
-                console.print(f"[muted]📦 使用记忆存储: {store_type}[/muted]")
+                    # 调试输出：显示使用的记忆存储类型
+                    store_type = type(memory_store).__name__
+                    console.print(f"[muted]📦 使用记忆存储: {store_type}[/muted]")
 
-                # 调试输出：显示要存储的内容
-                console.print(f"[muted]📝 存储内容: {summary[:50]}...[/muted]")
+                    # 调试输出：显示要存储的内容
+                    console.print(f"[muted]📝 存储内容: {summary[:50]}...[/muted]")
 
-                result = await memory_store.store_memory(
-                    summary,
-                    metadata={
-                        "type": "manual_store",
-                        "reason": reason,
-                        "message_count": len(to_compress),
-                        "timestamp": datetime.now().isoformat(),
-                    },
-                )
-
-                # 调试输出：显示存储结果
-                if result:
-                    console.print("[success]✅ 记忆存储成功[/success]")
-                else:
-                    console.print("[warning]⚠️ 记忆存储失败（可能使用了 Mock 存储）[/warning]")
-
-                console.print(
-                    Panel(
-                        Markdown(summary),
-                        title="🧠 上下文已存入记忆",
-                        border_style="green",
-                        padding=(0, 1),
-                        style="dim",
+                    result = await memory_store.store_memory(
+                        summary,
+                        metadata={
+                            "type": "manual_store",
+                            "reason": reason,
+                            "message_count": len(to_compress),
+                            "timestamp": datetime.now().isoformat(),
+                        },
                     )
-                )
 
-                result_msg = f"✅ 已将 {len(to_compress)} 条消息存入记忆\n原因: {reason}\n总结: {summary[:100]}..."
+                    # 调试输出：显示存储结果
+                    if result:
+                        console.print("[success]✅ 记忆存储成功[/success]")
+                    else:
+                        console.print("[warning]⚠️ 记忆存储失败（可能使用了 Mock 存储）[/warning]")
+
+                    console.print(
+                        Panel(
+                            Markdown(summary),
+                            title="🧠 上下文已存入记忆",
+                            border_style="green",
+                            padding=(0, 1),
+                            style="dim",
+                        )
+                    )
+
+                    result_msg = f"✅ 已将 {len(to_compress)} 条消息存入记忆\n原因: {reason}\n总结: {summary[:100]}..."
+                else:
+                    # 记忆模块禁用
+                    console.print("[warning]⚠️ 记忆模块已禁用，未存储到记忆系统[/warning]")
+                    console.print(
+                        Panel(
+                            Markdown(summary),
+                            title="📝 上下文已压缩 (记忆模块已禁用)",
+                            border_style="yellow",
+                            padding=(0, 1),
+                            style="dim",
+                        )
+                    )
+                    result_msg = f"⚠️ 记忆模块已禁用，仅压缩了 {len(to_compress)} 条消息\n原因: {reason}\n总结: {summary[:100]}..."
             else:
                 result_msg = "⚠️ 上下文总结失败，未存入记忆"
                 console.print(f"[warning]{result_msg}[/warning]")

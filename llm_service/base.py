@@ -77,17 +77,18 @@ class BaseLLMService(ABC):
         self, chat_history: List[dict], timing_info: str,
     ) -> str:
         """
-        Timing 模块：分析对话的时间维度信息。
+        Timing 模块（含自我反思功能）：分析对话的时间维度信息和进行自我反思。
 
         评估对话已经持续多久、上次回复距今多长时间、建议等待时长、
-        以及其他与时间节奏相关的考量。
+        以及其他与时间节奏相关的考量。同时反思自己的回复逻辑，
+        检查人设一致性、回复合理性和认知局限性。
 
         Args:
             chat_history: 当前对话历史（与主 Agent 完全一致的上下文）
             timing_info:  系统提供的精确时间戳信息（对话开始时间、各消息时间等）
 
         Returns:
-            时间维度分析文本
+            时间维度分析和自我反思的综合文本
         """
         ...
 
@@ -120,22 +121,6 @@ class BaseLLMService(ABC):
 
         Returns:
             认知分析文本
-        """
-        ...
-
-    @abstractmethod
-    async def analyze_reflection(self, chat_history: List[dict]) -> str:
-        """
-        自我反思模块：分析自己的回复逻辑，检查人设一致性、回复合理性和认知局限性。
-
-        接收与主 Agent 相同的上下文，返回一段简洁的自我反思文本。
-        该文本将被注入主 Agent 上下文，帮助主 Agent 进行自我纠错。
-
-        Args:
-            chat_history: 当前对话历史（与主 Agent 完全一致的上下文）
-
-        Returns:
-            自我反思分析文本
         """
         ...
 
@@ -189,5 +174,60 @@ class BaseLLMService(ABC):
 
         Returns:
             选中的记忆编号列表
+        """
+        ...
+
+    @abstractmethod
+    async def analyze_knowledge_categories(
+        self, context_messages: List[dict], categories_summary: str
+    ) -> List[str]:
+        """
+        了解模块-分类分析：分析对话内容涉及哪些个人特征分类。
+
+        在上下文裁切时触发，分析需要提取哪些分类的个人特征信息。
+
+        Args:
+            context_messages: 需要分析的上下文消息
+            categories_summary: 所有分类的摘要信息
+
+        Returns:
+            涉及的分类编号列表
+        """
+        ...
+
+    @abstractmethod
+    async def extract_knowledge_for_category(
+        self, context_messages: List[dict], category_id: str, category_name: str
+    ) -> str:
+        """
+        了解模块-内容提取：从对话中提取指定分类的个人特征信息。
+
+        为每个分类创建 subAgent，提取相关的个人特征内容。
+
+        Args:
+            context_messages: 需要分析的上下文消息
+            category_id: 分类编号
+            category_name: 分类名称
+
+        Returns:
+            提取的个人特征内容
+        """
+        ...
+
+    @abstractmethod
+    async def analyze_knowledge_need(
+        self, chat_history: List[dict], categories_summary: str
+    ) -> List[str]:
+        """
+        了解模块-需求分析：分析当前对话需要哪些个人特征信息。
+
+        在每次对话前触发，分析需要检索哪些分类的了解内容。
+
+        Args:
+            chat_history: 当前对话历史
+            categories_summary: 所有分类的摘要信息
+
+        Returns:
+            需要的分类编号列表
         """
         ...

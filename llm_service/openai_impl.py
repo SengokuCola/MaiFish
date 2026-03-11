@@ -12,6 +12,7 @@ from .base import BaseLLMService, ChatResponse, ModelInfo, ToolCall
 from .prompts import get_enabled_chat_tools
 from .utils import format_chat_history, format_chat_history_for_eq, filter_for_api
 from prompt_loader import load_prompt
+from knowledge import extract_category_ids_from_result
 
 
 class OpenAILLMService(BaseLLMService):
@@ -200,12 +201,12 @@ class OpenAILLMService(BaseLLMService):
     def get_model_info(self) -> ModelInfo:
         return ModelInfo(model_name=self._model, base_url=self._base_url)
 
-    # ──────── Timing 模块 ────────
+    # ──────── Timing 模块（含自我反思功能） ────────
 
     async def analyze_timing(
         self, chat_history: List[dict], timing_info: str,
     ) -> str:
-        """Timing 模块：分析对话的时间维度信息。"""
+        """Timing 模块（含自我反思功能）：分析对话的时间维度信息和进行自我反思。"""
         # 过滤掉感知消息（AI 的内部感知不需要再分析）
         filtered_history = [msg for msg in chat_history if msg.get("_type") != "perception"]
         formatted = format_chat_history(filtered_history)
@@ -284,36 +285,6 @@ class OpenAILLMService(BaseLLMService):
         response = await self._call_llm(
             "认知模块 (Cognition)",
             cognition_messages,
-            temperature=0.3,
-            max_tokens=512,
-            **({"extra_body": extra_body} if extra_body else {}),
-        )
-
-        return response.choices[0].message.content or ""
-
-    # ──────── 自我反思模块 (Reflection Module) ────────
-
-    async def analyze_reflection(self, chat_history: List[dict]) -> str:
-        """自我反思模块：分析自己的回复逻辑，检查人设一致性、回复合理性和认知局限性。"""
-        # 过滤掉感知消息（AI 的内部感知不需要再分析）
-        filtered_history = [msg for msg in chat_history if msg.get("_type") != "perception"]
-        # 获取最近几轮对话（约 8-10 条消息，约 3-5 轮）
-        recent_messages = filtered_history[-10:] if len(filtered_history) > 10 else filtered_history
-        # 使用情商模块专用格式化函数：只包含用户回复、助手思考、助手说
-        formatted = format_chat_history_for_eq(recent_messages)
-
-        reflection_messages = [
-            {"role": "system", "content": load_prompt("reflection.system")},
-            {
-                "role": "user",
-                "content": f"以下是最近几轮对话记录，请反思自己的回复并分析人设一致性、回复合理性和认知局限性：\n\n{formatted}",
-            },
-        ]
-        extra_body = self._build_extra_body()
-
-        response = await self._call_llm(
-            "自我反思模块 (Reflection)",
-            reflection_messages,
             temperature=0.3,
             max_tokens=512,
             **({"extra_body": extra_body} if extra_body else {}),
@@ -448,6 +419,133 @@ class OpenAILLMService(BaseLLMService):
             return selected_indices
         except Exception:
             # 选择失败时返回空列表
+            return []
+
+    # ──────── 了解模块 (Knowledge Module) ────────
+
+    async def analyze_knowledge_categories(
+        self, context_messages: List[dict], categories_summary: str
+    ) -> List[str]:
+        """
+        了解模块-分类分析：分析对话内容涉及哪些个人特征分类。
+
+        在上下文裁切时触发，分析需要提取哪些分类的个人特征信息。
+        """
+        from knowledge import format_context_for_memory
+
+        context_text = format_context_for_memory(context_messages)
+        if not context_text:
+            return []
+
+        # 加载分类分析 prompt
+        prompt = load_prompt("knowledge_category.system", categories_summary=categories_summary)
+
+        category_messages = [
+            {"role": "system", "content": prompt},
+            {
+                "role": "user",
+                "content": f"请分析以下对话内容涉及哪些个人特征分类：\n\n{context_text}",
+            },
+        ]
+        extra_body = self._build_extra_body()
+
+        try:
+            response = await self._call_llm(
+                "了解模块-分类分析",
+                category_messages,
+                temperature=0.3,
+                max_tokens=256,
+                **({"extra_body": extra_body} if extra_body else {}),
+            )
+            result = response.choices[0].message.content or ""
+            return extract_category_ids_from_result(result)
+        except Exception:
+            return []
+
+    async def extract_knowledge_for_category(
+        self, context_messages: List[dict], category_id: str, category_name: str
+    ) -> str:
+        """
+        了解模块-内容提取：从对话中提取指定分类的个人特征信息。
+
+        为每个分类创建 subAgent，提取相关的个人特征内容。
+        """
+        from knowledge import format_context_for_memory
+
+        context_text = format_context_for_memory(context_messages)
+        if not context_text:
+            return ""
+
+        # 加载内容提取 prompt
+        prompt = load_prompt("knowledge_extract.system", category_name=category_name)
+
+        extract_messages = [
+            {"role": "system", "content": prompt},
+            {
+                "role": "user",
+                "content": f"请从以下对话内容中提取与「{category_name}」相关的信息：\n\n{context_text}",
+            },
+        ]
+        extra_body = self._build_extra_body()
+
+        try:
+            response = await self._call_llm(
+                f"了解模块-{category_name}提取",
+                extract_messages,
+                temperature=0.3,
+                max_tokens=512,
+                **({"extra_body": extra_body} if extra_body else {}),
+            )
+            result = response.choices[0].message.content or ""
+
+            # 检查是否表示"无"
+            if "无" in result or not result.strip():
+                return ""
+
+            return result
+        except Exception:
+            return ""
+
+    async def analyze_knowledge_need(
+        self, chat_history: List[dict], categories_summary: str
+    ) -> List[str]:
+        """
+        了解模块-需求分析：分析当前对话需要哪些个人特征信息。
+
+        在每次对话前触发，分析需要检索哪些分类的了解内容。
+        """
+        # 过滤掉感知消息
+        filtered_history = [msg for msg in chat_history if msg.get("_type") != "perception"]
+        # 获取最近几轮对话用于分析
+        recent_messages = filtered_history[-10:] if len(filtered_history) > 10 else filtered_history
+        formatted = format_chat_history(recent_messages)
+
+        # 加载需求分析 prompt
+        prompt = load_prompt("knowledge_retrieve.system",
+            chat_context=formatted,
+            categories_summary=categories_summary
+        )
+
+        need_messages = [
+            {"role": "system", "content": prompt},
+            {
+                "role": "user",
+                "content": "请分析当前对话需要哪些个人特征信息。",
+            },
+        ]
+        extra_body = self._build_extra_body()
+
+        try:
+            response = await self._call_llm(
+                "了解模块-需求分析",
+                need_messages,
+                temperature=0.3,
+                max_tokens=256,
+                **({"extra_body": extra_body} if extra_body else {}),
+            )
+            result = response.choices[0].message.content or ""
+            return extract_category_ids_from_result(result)
+        except Exception:
             return []
 
     # ──────── 对话上下文构建 ────────
