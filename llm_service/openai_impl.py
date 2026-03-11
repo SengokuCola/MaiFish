@@ -12,6 +12,7 @@ from .base import BaseLLMService, ChatResponse, ModelInfo, ToolCall
 from .prompts import get_enabled_chat_tools
 from .utils import format_chat_history, format_chat_history_for_eq, filter_for_api
 from prompt_loader import load_prompt
+from agent_state import agent_state
 
 
 class OpenAILLMService(BaseLLMService):
@@ -46,7 +47,7 @@ class OpenAILLMService(BaseLLMService):
         self._max_tokens = max_tokens
         self._enable_thinking = enable_thinking
 
-        # 如果没有提供自定义提示词，则根据配置动态构建
+        # 如果没有提供自定义提示词，则根据配置动态构建（为 social / free 各准备一份）
         if chat_system_prompt is None:
             from config import ENABLE_WRITE_FILE, ENABLE_READ_FILE, ENABLE_LIST_FILES, ENABLE_QQ_TOOLS
 
@@ -79,10 +80,13 @@ class OpenAILLMService(BaseLLMService):
             else:
                 tools_section = ""
 
-            # 加载提示词模板并注入工具部分
-            self._chat_system_prompt = load_prompt("chat.system", file_tools_section=tools_section)
+            # 加载提示词模板并注入工具部分（social / free 两套）
+            self._chat_system_prompt_social = load_prompt("chat.system", file_tools_section=tools_section)
+            self._chat_system_prompt_free = load_prompt("chat_free.system", file_tools_section=tools_section)
         else:
-            self._chat_system_prompt = chat_system_prompt
+            # 外部自定义提示词时，两种模式共用同一份
+            self._chat_system_prompt_social = chat_system_prompt
+            self._chat_system_prompt_free = chat_system_prompt
 
         self._client = AsyncOpenAI(
             api_key=api_key,
@@ -174,6 +178,13 @@ class OpenAILLMService(BaseLLMService):
             enable_list_files=ENABLE_LIST_FILES,
             enable_qq_tools=ENABLE_QQ_TOOLS,
         )
+
+        # 在 free 模式下移除 say 工具，避免对用户直接发言
+        if agent_state.is_free():
+            enabled_tools = [
+                t for t in enabled_tools
+                if t.get("function", {}).get("name") != "say"
+            ]
 
         # 合并内置工具与 MCP 等外部工具
         all_tools = enabled_tools + self._extra_tools
@@ -454,7 +465,13 @@ class OpenAILLMService(BaseLLMService):
 
     def build_chat_context(self, user_text: str) -> List[dict]:
         """根据用户初始输入构建对话循环的初始上下文。"""
+        # 根据当前 Agent 状态选择合适的 system prompt
+        if agent_state.is_free():
+            system_prompt = self._chat_system_prompt_free
+        else:
+            system_prompt = self._chat_system_prompt_social
+
         return [
-            {"role": "system", "content": self._chat_system_prompt},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_text},
         ]

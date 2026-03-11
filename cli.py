@@ -409,7 +409,8 @@ class BufferCLI:
                 if ENABLE_REFLECTION_MODULE:
                     tasks.append(("reflection", self.llm_service.analyze_reflection(chat_history)))
                     status_text_parts.append("🪞")
-                if ENABLE_TIMING_MODULE:
+                # 只有在 social 模式下才运行时间感知模块
+                if ENABLE_TIMING_MODULE and agent_state.is_social():
                     tasks.append(("timing", self.llm_service.analyze_timing(chat_history, timing_info)))
                     status_text_parts.append("⏱️")
                 tasks.append(("memory", self._query_memory(chat_history)))
@@ -421,26 +422,21 @@ class BufferCLI:
                 ):
                     results = await asyncio.gather(*[task for _, task in tasks], return_exceptions=True)
 
-                # 解析结果
-                eq_result, cognition_result, reflection_result, timing_result, memory_result = None, None, None, None, None
-                result_idx = 0
-                if ENABLE_EMOTION_MODULE:
-                    eq_result = results[result_idx]
-                    result_idx += 1
-                if ENABLE_COGNITION_MODULE:
-                    cognition_result = results[result_idx]
-                    result_idx += 1
-                if ENABLE_REFLECTION_MODULE:
-                    reflection_result = results[result_idx]
-                    result_idx += 1
-                if ENABLE_TIMING_MODULE:
-                    timing_result = results[result_idx]
-                    result_idx += 1
-                memory_result = results[result_idx]
+                # 解析结果（根据任务名称映射，避免索引错位）
+                name_to_result: dict[str, object] = {}
+                for (name, _), result in zip(tasks, results):
+                    name_to_result[name] = result
+
+                eq_result = name_to_result.get("eq")
+                cognition_result = name_to_result.get("cognition")
+                reflection_result = name_to_result.get("reflection")
+                timing_result = name_to_result.get("timing")
+                memory_result = name_to_result.get("memory")
 
                 # 处理情商模块结果
                 eq_analysis = ""
-                if ENABLE_EMOTION_MODULE:
+                # 只有在启用情商模块且当前处于 social 模式、并且实际执行过 eq 任务时才处理结果
+                if ENABLE_EMOTION_MODULE and agent_state.is_social() and (eq_result is not None):
                     if isinstance(eq_result, Exception):
                         console.print(f"[warning]情商模块分析失败: {eq_result}[/warning]")
                     elif eq_result:
