@@ -52,10 +52,10 @@ class Replyer:
         # 获取当前时间
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        # 格式化对话历史（过滤掉感知消息和 tool 消息）
+        # 格式化对话历史（过滤掉 system 消息，保留其他内容）
         filtered_history = [
             msg for msg in chat_history
-            if msg.get("role") not in ("tool",) and msg.get("_type") != "perception"
+            if msg.get("role") != "system" and msg.get("_type") != "perception"
         ]
         formatted_history = format_chat_history(filtered_history)
 
@@ -65,7 +65,6 @@ class Replyer:
             {
                 "role": "user",
                 "content": (
-                    f"你正在上网和群友聊天，现在请你读读之前的聊天记录，然后给出日常且口语化的回复。\n\n"
                     f"当前时间：{current_time}\n\n"
                     f"【聊天记录】\n{formatted_history}\n\n"
                     f"【你的想法】\n{reason}\n\n"

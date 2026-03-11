@@ -36,38 +36,46 @@ def recv_exact(conn: socket.socket, n: int) -> bytes | None:
 
 def format_message(idx: int, msg: dict) -> str:
     """格式化单条消息用于终端展示。"""
-    role = msg.get("role", "?")
-    content = msg.get("content", "") or ""
-    tool_calls = msg.get("tool_calls", [])
-    tool_call_id = msg.get("tool_call_id", "")
+    try:
+        role = str(msg.get("role", "?")) if msg.get("role") else "?"
+        content = str(msg.get("content", "")) if msg.get("content") else ""
+        tool_calls = msg.get("tool_calls", []) or []
+        tool_call_id = str(msg.get("tool_call_id", "")) if msg.get("tool_call_id") else ""
 
-    icon, style = ROLE_STYLES.get(role, ("❓", "white"))
+        icon, style = ROLE_STYLES.get(role, ("❓", "white"))
 
-    parts: list[str] = []
+        parts: list[str] = []
 
-    # 消息头
-    header = f"[{style}]{icon} [{idx}] {role}[/{style}]"
-    if tool_call_id:
-        header += f"  [dim](tool_call_id: {tool_call_id})[/dim]"
-    parts.append(header)
+        # 消息头
+        header = f"[{style}]{icon} [{idx}] {role}[/{style}]"
+        if tool_call_id:
+            header += f"  [dim](tool_call_id: {tool_call_id})[/dim]"
+        parts.append(header)
 
-    # 正文
-    if content:
-        display = content if len(content) <= 3000 else (
-            content[:3000] + f"\n[dim]... (截断, 共 {len(content)} 字符)[/dim]"
-        )
-        parts.append(display)
+        # 正文
+        if content:
+            display = content if len(content) <= 3000 else (
+                content[:3000] + f"\n[dim]... (截断, 共 {len(content)} 字符)[/dim]"
+            )
+            parts.append(display)
 
-    # 工具调用
-    for tc in tool_calls:
-        func = tc.get("function", {})
-        name = func.get("name", "?")
-        args = func.get("arguments", "")
-        if isinstance(args, str) and len(args) > 500:
-            args = args[:500] + "..."
-        parts.append(f"  [yellow]→ tool_call: {name}({args})[/yellow]")
+        # 工具调用
+        if isinstance(tool_calls, list):
+            for tc in tool_calls:
+                if not isinstance(tc, dict):
+                    continue
+                func = tc.get("function", {})
+                if not isinstance(func, dict):
+                    continue
+                name = func.get("name", "?")
+                args = func.get("arguments", "")
+                if isinstance(args, str) and len(args) > 500:
+                    args = args[:500] + "..."
+                parts.append(f"  [yellow]→ tool_call: {name}({args})[/yellow]")
 
-    return "\n".join(parts)
+        return "\n".join(parts)
+    except Exception:
+        return f"[red]消息 [{idx}] 格式化错误[/red]"
 
 
 def main():
@@ -106,34 +114,69 @@ def main():
                 break
 
             call_count += 1
-            payload = json.loads(payload_bytes.decode("utf-8"))
 
-            label = payload.get("label", "LLM Call")
-            messages = payload.get("messages", [])
-            tools = payload.get("tools")
+            try:
+                payload = json.loads(payload_bytes.decode("utf-8"))
+            except json.JSONDecodeError as e:
+                console.print(f"\n[red]JSON 解析错误: {e}[/red]")
+                console.print(f"[dim]原始数据: {payload_bytes[:200]}...[/dim]")
+                continue
 
-            # ── 标题栏 ──
-            console.print(f"\n{'═' * 90}")
-            console.print(
-                f"[bold yellow]#{call_count}  {label}[/bold yellow]  "
-                f"[dim]({len(messages)} messages)[/dim]"
-            )
-            console.print(f"{'═' * 90}")
+            try:
+                label = payload.get("label", "LLM Call")
+                messages = payload.get("messages", [])
+                tools = payload.get("tools")
+                response = payload.get("response")
 
-            # ── 逐条消息 ──
-            for i, msg in enumerate(messages):
-                console.print(format_message(i, msg))
-                if i < len(messages) - 1:
-                    console.print("[dim]─ ─ ─[/dim]")
-
-            # ── tools 信息 ──
-            if tools:
-                tool_names = [
-                    t.get("function", {}).get("name", "?") for t in tools
-                ]
+                # ── 标题栏 ──
+                console.print(f"\n{'═' * 90}")
                 console.print(
-                    f"\n[dim]可用工具: {', '.join(tool_names)}[/dim]"
+                    f"[bold yellow]#{call_count}  {label}[/bold yellow]  "
+                    f"[dim]({len(messages)} messages)[/dim]"
                 )
+                console.print(f"{'═' * 90}")
+
+                # ── 逐条消息 ──
+                for i, msg in enumerate(messages):
+                    console.print(format_message(i, msg))
+                    if i < len(messages) - 1:
+                        console.print("[dim]─ ─ ─[/dim]")
+
+                # ── tools 信息 ──
+                if tools:
+                    tool_names = [
+                        t.get("function", {}).get("name", "?") for t in tools
+                    ]
+                    console.print(
+                        f"\n[dim]可用工具: {', '.join(tool_names)}[/dim]"
+                    )
+            except Exception as e:
+                console.print(f"\n[red]数据处理错误: {e}[/red]")
+                console.print(f"[dim]Payload: {payload}[/dim]")
+                continue
+
+            # ── 响应结果 ──
+            if response:
+                try:
+                    console.print("\n[bold cyan]📤 LLM 响应:[/bold cyan]")
+                    resp_content = response.get("content", "")
+                    if resp_content:
+                        display = resp_content if len(str(resp_content)) <= 3000 else (
+                            str(resp_content)[:3000] + f"\n[dim]... (截断, 共 {len(str(resp_content))} 字符)[/dim]"
+                        )
+                        console.print(Panel(display, border_style="cyan", padding=(0, 1)))
+                    resp_tool_calls = response.get("tool_calls", [])
+                    if resp_tool_calls:
+                        for tc in resp_tool_calls:
+                            func = tc.get("function", {})
+                            name = func.get("name", "?")
+                            args = func.get("arguments", "")
+                            if isinstance(args, str) and len(args) > 300:
+                                args = args[:300] + "..."
+                            console.print(f"  [cyan]→ tool_call: {name}({args})[/cyan]")
+                except Exception as e:
+                    console.print(f"\n[red]响应解析错误: {e}[/red]")
+                    console.print(f"[dim]原始数据: {response}[/dim]")
 
             console.print(f"[dim]{'─' * 90}[/dim]")
 

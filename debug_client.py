@@ -57,14 +57,19 @@ class DebugViewer:
 
         console.print("[warning]⚠️ 无法连接到调试窗口（超时）[/warning]")
 
-    def send(self, label: str, messages: list, tools: Optional[list] = None):
-        """发送一次 LLM 调用的完整 prompt 到调试窗口。"""
+    def send(self, label: str, messages: list, tools: Optional[list] = None, response: Optional[dict] = None):
+        """发送一次 LLM 调用的完整 prompt 和响应到调试窗口。"""
         if not self._conn:
+            return
+
+        # 只在有响应时才发送（避免显示两次：请求中 + 完成响应）
+        if response is None:
             return
 
         payload = {"label": label, "messages": messages}
         if tools:
             payload["tools"] = tools
+        payload["response"] = response
 
         try:
             data = json.dumps(payload, ensure_ascii=False).encode("utf-8")

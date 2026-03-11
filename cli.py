@@ -452,8 +452,6 @@ class BufferCLI:
                 if ENABLE_TIMING_MODULE:
                     tasks.append(("timing", self.llm_service.analyze_timing(chat_history, timing_info)))
                     status_text_parts.append("⏱️🪞")
-                    tasks.append(("timing", self.llm_service.analyze_timing(chat_history, timing_info)))
-                    status_text_parts.append("⏱️")
                 if ENABLE_KNOWLEDGE_MODULE:
                     tasks.append(("knowledge", retrieve_relevant_knowledge(self.llm_service, chat_history)))
                     status_text_parts.append("👤")

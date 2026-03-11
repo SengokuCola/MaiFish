@@ -96,11 +96,11 @@ class OpenAILLMService(BaseLLMService):
         """设置额外的工具定义（如 MCP 工具），与内置工具合并使用。"""
         self._extra_tools = list(tools)
 
-    def set_debug_callback(self, callback: Callable[[str, list, Optional[list]], None]):
+    def set_debug_callback(self, callback: Callable[[str, list, Optional[list], Optional[dict]], None]):
         """
-        设置调试回调，每次 LLM 调用前触发。
+        设置调试回调，每次 LLM 调用时触发（调用前和响应后）。
 
-        callback(label, messages, tools) — tools 可为 None。
+        callback(label, messages, tools, response) — tools 和 response 可为 None。
         """
         self._debug_callback = callback
 
@@ -116,7 +116,33 @@ class OpenAILLMService(BaseLLMService):
         if tools:
             create_kwargs["tools"] = tools
 
-        return await self._client.chat.completions.create(**create_kwargs)
+        response = await self._client.chat.completions.create(**create_kwargs)
+
+        # 发送响应结果到调试窗口
+        if self._debug_callback:
+            try:
+                # 转换 tool_calls 为可序列化的格式
+                tool_calls_list = []
+                if response.choices[0].message.tool_calls:
+                    for tc in response.choices[0].message.tool_calls:
+                        tool_calls_list.append({
+                            "id": tc.id,
+                            "type": tc.type,
+                            "function": {
+                                "name": tc.function.name,
+                                "arguments": tc.function.arguments,
+                            },
+                        })
+
+                resp_dict = {
+                    "content": response.choices[0].message.content,
+                    "tool_calls": tool_calls_list,
+                }
+                self._debug_callback(label, messages, tools, resp_dict)
+            except Exception:
+                pass
+
+        return response
 
     def _build_extra_body(self) -> dict:
         """构建 extra_body 参数（如 enable_thinking）。"""
@@ -207,8 +233,11 @@ class OpenAILLMService(BaseLLMService):
         self, chat_history: List[dict], timing_info: str,
     ) -> str:
         """Timing 模块（含自我反思功能）：分析对话的时间维度信息和进行自我反思。"""
-        # 过滤掉感知消息（AI 的内部感知不需要再分析）
-        filtered_history = [msg for msg in chat_history if msg.get("_type") != "perception"]
+        # 过滤掉感知消息和 system 消息
+        filtered_history = [
+            msg for msg in chat_history
+            if msg.get("_type") != "perception" and msg.get("role") != "system"
+        ]
         formatted = format_chat_history(filtered_history)
         timing_messages = [
             {"role": "system", "content": load_prompt("timing.system")},
@@ -296,8 +325,11 @@ class OpenAILLMService(BaseLLMService):
 
     async def analyze_memory_need(self, chat_history: List[dict]) -> str:
         """记忆需求分析模块：分析当前对话上下文，思考需要查询什么记忆信息。"""
-        # 过滤掉感知消息（AI 的内部感知不需要再分析）
-        filtered_history = [msg for msg in chat_history if msg.get("_type") != "perception"]
+        # 过滤掉感知消息和 system 消息
+        filtered_history = [
+            msg for msg in chat_history
+            if msg.get("_type") != "perception" and msg.get("role") != "system"
+        ]
         # 获取最近几轮对话用于分析
         recent_messages = filtered_history[-10:] if len(filtered_history) > 10 else filtered_history
         formatted = format_chat_history(recent_messages)
@@ -328,7 +360,9 @@ class OpenAILLMService(BaseLLMService):
 
     async def summarize_context(self, context_messages: List[dict]) -> str:
         """上下文总结模块：对需要压缩的上下文进行总结。"""
-        formatted = format_chat_history(context_messages)
+        # 过滤掉 system 消息
+        filtered_messages = [msg for msg in context_messages if msg.get("role") != "system"]
+        formatted = format_chat_history(filtered_messages)
 
         summarize_messages = [
             {"role": "system", "content": load_prompt("context_summarize.system")},
@@ -514,8 +548,11 @@ class OpenAILLMService(BaseLLMService):
 
         在每次对话前触发，分析需要检索哪些分类的了解内容。
         """
-        # 过滤掉感知消息
-        filtered_history = [msg for msg in chat_history if msg.get("_type") != "perception"]
+        # 过滤掉感知消息和 system 消息
+        filtered_history = [
+            msg for msg in chat_history
+            if msg.get("_type") != "perception" and msg.get("role") != "system"
+        ]
         # 获取最近几轮对话用于分析
         recent_messages = filtered_history[-10:] if len(filtered_history) > 10 else filtered_history
         formatted = format_chat_history(recent_messages)
