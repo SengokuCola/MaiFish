@@ -19,10 +19,9 @@ if AIOHTTP_AVAILABLE:
 from rich.panel import Panel
 from rich.markdown import Markdown
 
-from config import console, ENABLE_MEMORY_MODULE
+from config import console
 from input_reader import InputReader
 from llm_service import BaseLLMService
-from memory import get_memory_store
 from replyer import Replyer
 
 if TYPE_CHECKING:
@@ -467,74 +466,31 @@ async def handle_store_context(tc, chat_history: list, ctx: ToolHandlerContext):
         if 0 <= i < len(chat_history):
             to_compress.append(chat_history[i])
 
-    # 总结上下文并存入记忆
+    # 总结上下文并压缩
     try:
         with console.status(
-            "[info]🧠 正在总结上下文并存入记忆...[/info]",
+            "[info]📝 正在总结上下文...[/info]",
             spinner="dots",
         ):
             summary = await ctx.llm_service.summarize_context(to_compress)
 
             if summary:
-                # 根据配置决定是否存入记忆
-                result = False
-                if ENABLE_MEMORY_MODULE:
-                    # 存入记忆
-                    memory_store = get_memory_store()
-
-                    # 调试输出：显示使用的记忆存储类型
-                    store_type = type(memory_store).__name__
-                    console.print(f"[muted]📦 使用记忆存储: {store_type}[/muted]")
-
-                    # 调试输出：显示要存储的内容
-                    console.print(f"[muted]📝 存储内容: {summary[:50]}...[/muted]")
-
-                    result = await memory_store.store_memory(
-                        summary,
-                        metadata={
-                            "type": "manual_store",
-                            "reason": reason,
-                            "message_count": len(to_compress),
-                            "timestamp": datetime.now().isoformat(),
-                        },
+                console.print(
+                    Panel(
+                        Markdown(summary),
+                        title="📝 上下文已压缩",
+                        border_style="green",
+                        padding=(0, 1),
+                        style="dim",
                     )
-
-                    # 调试输出：显示存储结果
-                    if result:
-                        console.print("[success]✅ 记忆存储成功[/success]")
-                    else:
-                        console.print("[warning]⚠️ 记忆存储失败（可能使用了 Mock 存储）[/warning]")
-
-                    console.print(
-                        Panel(
-                            Markdown(summary),
-                            title="🧠 上下文已存入记忆",
-                            border_style="green",
-                            padding=(0, 1),
-                            style="dim",
-                        )
-                    )
-
-                    result_msg = f"✅ 已将 {len(to_compress)} 条消息存入记忆\n原因: {reason}\n总结: {summary[:100]}..."
-                else:
-                    # 记忆模块禁用
-                    console.print("[warning]⚠️ 记忆模块已禁用，未存储到记忆系统[/warning]")
-                    console.print(
-                        Panel(
-                            Markdown(summary),
-                            title="📝 上下文已压缩 (记忆模块已禁用)",
-                            border_style="yellow",
-                            padding=(0, 1),
-                            style="dim",
-                        )
-                    )
-                    result_msg = f"⚠️ 记忆模块已禁用，仅压缩了 {len(to_compress)} 条消息\n原因: {reason}\n总结: {summary[:100]}..."
+                )
+                result_msg = f"✅ 已压缩 {len(to_compress)} 条消息\n原因: {reason}"
             else:
-                result_msg = "⚠️ 上下文总结失败，未存入记忆"
+                result_msg = "⚠️ 上下文总结失败"
                 console.print(f"[warning]{result_msg}[/warning]")
 
     except Exception as e:
-        result_msg = f"❌ 存入记忆时出错: {e}"
+        result_msg = f"❌ 总结上下文时出错: {e}"
         console.print(f"[error]{result_msg}[/error]")
 
     # 从后往前删除消息

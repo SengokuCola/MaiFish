@@ -13,8 +13,7 @@ from rich.markdown import Markdown
 from rich.text import Text
 from rich import box
 
-from config import console, ENABLE_EMOTION_MODULE, ENABLE_COGNITION_MODULE, ENABLE_TIMING_MODULE, ENABLE_KNOWLEDGE_MODULE, ENABLE_MEMORY_MODULE, ENABLE_MCP, get_mock_memory_store
-from memory import get_memory_store
+from config import console, ENABLE_EMOTION_MODULE, ENABLE_COGNITION_MODULE, ENABLE_TIMING_MODULE, ENABLE_KNOWLEDGE_MODULE, ENABLE_MCP
 from input_reader import InputReader
 from debug_client import DebugViewer
 from timing import build_timing_info
@@ -47,23 +46,7 @@ class BufferCLI:
         self.llm_service: Optional[BaseLLMService] = None
         self._reader = InputReader()
         self._chat_history: Optional[list] = None  # 持久化的对话历史
-        # 根据配置决定是否启用记忆功能
-        if ENABLE_MEMORY_MODULE:
-            self._memory_store = get_memory_store()  # 记忆存储实例
-        else:
-            self._memory_store = get_mock_memory_store()  # 使用 Mock 存储
         self._knowledge_store = get_knowledge_store()  # 了解存储实例
-
-        # 显示记忆存储类型
-        store_type = type(self._memory_store).__name__
-        from config import console
-        if not ENABLE_MEMORY_MODULE:
-            console.print("[warning]⚠️ 记忆系统: 已禁用 (ENABLE_MEMORY_MODULE=false)[/warning]")
-        elif "Mock" in store_type:
-            console.print("[warning]⚠️ 记忆系统: Mock 存储（A_Memorix 未加载）[/warning]")
-            console.print("[muted]  记忆功能将不会持久化，请检查 A_Memorix 配置[/muted]")
-        else:
-            console.print(f"[success]✓ 记忆系统: {store_type}[/success]")
 
         # 显示了解存储统计
         knowledge_stats = self._knowledge_store.get_stats()
@@ -254,39 +237,16 @@ class BufferCLI:
                                 console.print(f"[warning]了解存储失败: {e}[/warning]")
                         if summary:
                             # 存入记忆
-                            store_result = False
-                            if ENABLE_MEMORY_MODULE:
-                                store_result = await self._memory_store.store_memory(
-                                    summary,
-                                    metadata={"type": "context_summary", "timestamp": datetime.now().isoformat()},
+                            # 显示压缩结果
+                            console.print(
+                                Panel(
+                                    Markdown(summary),
+                                    title="📝 上下文已压缩",
+                                    border_style="green",
+                                    padding=(0, 1),
+                                    style="dim",
                                 )
-                                # 显示存储结果
-                                store_type = type(self._memory_store).__name__
-                                if store_result:
-                                    console.print(f"[success]✅ 记忆存储成功 ({store_type})[/success]")
-                                else:
-                                    console.print(f"[warning]⚠️ 记忆存储失败 - 使用了 {store_type}[/warning]")
-
-                                console.print(
-                                    Panel(
-                                        Markdown(summary),
-                                        title="🧠 上下文已压缩并存入记忆",
-                                        border_style="green",
-                                        padding=(0, 1),
-                                        style="dim",
-                                    )
-                                )
-                            else:
-                                # 记忆模块禁用时，只显示压缩结果，不存储
-                                console.print(
-                                    Panel(
-                                        Markdown(summary),
-                                        title="📝 上下文已压缩 (记忆模块已禁用)",
-                                        border_style="yellow",
-                                        padding=(0, 1),
-                                        style="dim",
-                                    )
-                                )
+                            )
                     except Exception as e:
                         console.print(f"[warning]上下文总结失败: {e}[/warning]")
 
@@ -311,74 +271,6 @@ class BufferCLI:
                         if tool_call_id not in valid_tool_call_ids:
                             chat_history.pop(i)
                     i -= 1
-
-    # ──────── 记忆查询模块 ────────
-
-    async def _query_memory(self, chat_history: list) -> str:
-        """
-        记忆查询模块：
-        1. 根据上下文思考需要什么记忆信息，生成 1-3 个问句
-        2. 获取所有记忆
-        3. 用 LLM 选择与问句相关的记忆
-        4. 返回选中的记忆内容
-        """
-        try:
-            # 分析记忆需求
-            need_result = await self.llm_service.analyze_memory_need(chat_history)
-
-            # 显示记忆存储类型和状态
-            store_type = type(self._memory_store).__name__
-            all_memories = []
-            if hasattr(self._memory_store, "_memories"):
-                all_memories = self._memory_store._memories
-
-            # 无需查询
-            if not need_result or "无需查询" in need_result:
-                console.print(f"[muted]🧠 记忆检索: 无需查询 (共{len(all_memories)}条记忆, 来源: {store_type})[/muted]")
-                return ""
-
-            # 解析问句（每行一个）
-            questions = [q.strip() for q in need_result.split("\n") if q.strip() and "无需查询" not in q]
-            if not questions:
-                console.print(f"[muted]🧠 记忆检索: 未生成有效问题 (共{len(all_memories)}条记忆, 来源: {store_type})[/muted]")
-                return ""
-
-            # 限制最多 3 个问句
-            questions = questions[:3]
-
-            # 没有记忆数据
-            if not all_memories:
-                console.print(f"[muted]🧠 记忆检索: 记忆库为空 (来源: {store_type})[/muted]")
-                return ""
-
-            # 用 LLM 选择相关记忆
-            selected_indices = await self.llm_service.select_relevant_memories(
-                questions, all_memories
-            )
-
-            # 没有选中记忆
-            if not selected_indices:
-                console.print(f"[muted]🧠 记忆检索: {len(all_memories)}条记忆中未找到相关内容 (来源: {store_type})[/muted]")
-                return ""
-
-            # 获取选中的记忆内容
-            memory_results = []
-            for idx in selected_indices:
-                if 0 <= idx < len(all_memories):
-                    memory = all_memories[idx]
-                    content = memory.get("content", "")
-                    if content:
-                        memory_results.append(content)
-
-            # 显示查询统计
-            console.print(f"[muted]🧠 记忆检索: {len(all_memories)}条记忆中选中{len(selected_indices)}条 (来源: {store_type})[/muted]")
-
-            if memory_results:
-                return "\n\n".join(memory_results)
-            return ""
-        except Exception as e:
-            console.print(f"[warning]记忆查询失败: {e}[/warning]")
-            return ""
 
     # ──────── LLM 循环架构 ────────
 
@@ -418,7 +310,7 @@ class BufferCLI:
 
         每轮流程：
         1. 上下文管理：达到上限时自动压缩
-        2. 情商 + Timing + 记忆模块（并行）：分析用户情绪、对话时间节奏、查询相关记忆
+        2. 情商 + Timing + 了解模块（并行）：分析用户情绪、对话时间节奏、检索用户特征
            *注：如果上次没有调用工具，跳过模块分析
         3. 调用主 LLM：基于完整上下文生成响应
         """
@@ -429,7 +321,7 @@ class BufferCLI:
             # ── 上下文管理 ──
             await self._manage_context_length(chat_history)
 
-            # ── 情商模块 + Timing 模块 + 记忆需求分析（并行） ──
+            # ── 情商模块 + Timing 模块 + 了解模块（并行） ──
             # 只有上次调用了工具才重新分析（首次循环除外）
             if last_had_tool_calls:
                 timing_info = build_timing_info(
@@ -455,9 +347,6 @@ class BufferCLI:
                 if ENABLE_KNOWLEDGE_MODULE:
                     tasks.append(("knowledge", retrieve_relevant_knowledge(self.llm_service, chat_history)))
                     status_text_parts.append("👤")
-                if ENABLE_MEMORY_MODULE:
-                    tasks.append(("memory", self._query_memory(chat_history)))
-                    status_text_parts.append("🧠")
 
                 with console.status(
                     f"[info]{' '.join(status_text_parts)} {' + '.join(status_text_parts)} 模块并行分析中...[/info]",
@@ -466,7 +355,7 @@ class BufferCLI:
                     results = await asyncio.gather(*[task for _, task in tasks], return_exceptions=True)
 
                 # 解析结果
-                eq_result, cognition_result, timing_result, knowledge_result, memory_result = None, None, None, None, None
+                eq_result, cognition_result, timing_result, knowledge_result = None, None, None, None
                 result_idx = 0
                 if ENABLE_EMOTION_MODULE:
                     eq_result = results[result_idx]
@@ -479,9 +368,6 @@ class BufferCLI:
                     result_idx += 1
                 if ENABLE_KNOWLEDGE_MODULE:
                     knowledge_result = results[result_idx]
-                    result_idx += 1
-                if ENABLE_MEMORY_MODULE:
-                    memory_result = results[result_idx]
                     result_idx += 1
 
                 # 处理情商模块结果
@@ -535,23 +421,6 @@ class BufferCLI:
                             )
                         )
 
-                # 处理记忆查询结果
-                memory_analysis = ""
-                if ENABLE_MEMORY_MODULE:
-                    if isinstance(memory_result, Exception):
-                        console.print(f"[warning]记忆查询失败: {memory_result}[/warning]")
-                    elif memory_result:
-                        memory_analysis = memory_result
-                        console.print(
-                            Panel(
-                                Markdown(memory_analysis),
-                                title="🧠 记忆检索",
-                                border_style="bright_green",
-                                padding=(0, 1),
-                                style="dim",
-                            )
-                        )
-
                 # 处理了解模块结果
                 knowledge_analysis = ""
                 if ENABLE_KNOWLEDGE_MODULE:
@@ -583,8 +452,6 @@ class BufferCLI:
                     perception_parts.append(f"时间感知 & 自我反思\n{timing_analysis}")
                 if knowledge_analysis:
                     perception_parts.append(f"用户特征\n{knowledge_analysis}")
-                if memory_analysis:
-                    perception_parts.append(f"记忆检索\n{memory_analysis}")
 
                 if perception_parts:
                     # 添加感知消息（AI 的感知能力结果）

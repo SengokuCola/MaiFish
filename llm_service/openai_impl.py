@@ -321,41 +321,6 @@ class OpenAILLMService(BaseLLMService):
 
         return response.choices[0].message.content or ""
 
-    # ──────── 记忆需求分析模块 ────────
-
-    async def analyze_memory_need(self, chat_history: List[dict]) -> str:
-        """记忆需求分析模块：分析当前对话上下文，思考需要查询什么记忆信息。"""
-        # 过滤掉感知消息和 system 消息
-        filtered_history = [
-            msg for msg in chat_history
-            if msg.get("_type") != "perception" and msg.get("role") != "system"
-        ]
-        # 获取最近几轮对话用于分析
-        recent_messages = filtered_history[-10:] if len(filtered_history) > 10 else filtered_history
-        formatted = format_chat_history(recent_messages)
-
-        memory_need_messages = [
-            {"role": "system", "content": load_prompt("memory_need.system")},
-            {
-                "role": "user",
-                "content": f"以下是最近的对话记录，请分析需要从记忆系统中查询什么信息：\n\n{formatted}",
-            },
-        ]
-        extra_body = self._build_extra_body()
-
-        try:
-            response = await self._call_llm(
-                "记忆需求分析",
-                memory_need_messages,
-                temperature=0.3,
-                max_tokens=512,
-                **({"extra_body": extra_body} if extra_body else {}),
-            )
-            return response.choices[0].message.content or ""
-        except Exception:
-            # 分析失败时返回空字符串（表示无需查询）
-            return ""
-
     # ──────── 上下文总结模块 ────────
 
     async def summarize_context(self, context_messages: List[dict]) -> str:
@@ -385,75 +350,6 @@ class OpenAILLMService(BaseLLMService):
         except Exception:
             # 总结失败时返回空字符串
             return ""
-
-    # ──────── 记忆选择模块 ────────
-
-    async def select_relevant_memories(
-        self, questions: List[str], memories: List[dict]
-    ) -> List[int]:
-        """
-        记忆选择模块：从所有记忆中选择与问题相关的记忆。
-
-        将所有记忆（编号）和问句传给 LLM，让 LLM 选择有用的记忆并返回编号。
-        """
-        if not questions or not memories:
-            return []
-
-        # 构建记忆列表文本
-        memory_list_text = "\n".join([
-            f"{i+1}. {m.get('content', '')}"
-            for i, m in enumerate(memories)
-        ])
-
-        # 构建问题文本
-        questions_text = "\n".join([
-            f"- {q}"
-            for q in questions
-        ])
-
-        select_messages = [
-            {"role": "system", "content": load_prompt("memory_select.system")},
-            {
-                "role": "user",
-                "content": (
-                    f"【问题】\n{questions_text}\n\n"
-                    f"【记忆列表】\n{memory_list_text}\n\n"
-                    f"请选择与问题相关的记忆编号。"
-                ),
-            },
-        ]
-        extra_body = self._build_extra_body()
-
-        try:
-            response = await self._call_llm(
-                "记忆选择",
-                select_messages,
-                temperature=0.3,
-                max_tokens=256,
-                **({"extra_body": extra_body} if extra_body else {}),
-            )
-            result = response.choices[0].message.content or ""
-
-            # 解析返回的编号
-            result = result.strip()
-            if "无" in result or not result:
-                return []
-
-            # 解析编号（支持逗号分隔、空格分隔）
-            selected_indices = []
-            for part in result.replace(",", " ").replace("，", " ").split():
-                try:
-                    idx = int(part.strip())
-                    # 转换为 0-based 索引，并检查范围
-                    if 1 <= idx <= len(memories):
-                        selected_indices.append(idx - 1)
-                except ValueError:
-                    continue
-
-            return selected_indices
-        except Exception:
-            # 选择失败时返回空列表
-            return []
 
     # ──────── 了解模块 (Knowledge Module) ────────
 

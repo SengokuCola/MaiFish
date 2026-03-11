@@ -130,50 +130,17 @@ class BaseLLMService(ABC):
         ...
 
     @abstractmethod
-    async def analyze_memory_need(self, chat_history: List[dict]) -> str:
-        """
-        记忆需求分析模块：分析当前对话上下文，思考需要查询什么记忆信息。
-
-        根据当前对话内容，生成1-3个问句，用于从记忆系统中查询相关信息。
-
-        Args:
-            chat_history: 当前对话历史（与主 Agent 完全一致的上下文）
-
-        Returns:
-            记忆查询问句（1-3个问句，用换行分隔）
-        """
-        ...
-
-    @abstractmethod
     async def summarize_context(self, context_messages: List[dict]) -> str:
         """
         上下文总结模块：对需要压缩的上下文进行总结。
 
-        当对话历史过长时，对早期的对话内容进行总结，以便存入记忆系统。
+        当对话历史过长时，对早期的对话内容进行总结。
 
         Args:
             context_messages: 需要总结的上下文消息列表
 
         Returns:
             总结后的文本内容
-        """
-        ...
-
-    @abstractmethod
-    async def select_relevant_memories(
-        self, questions: List[str], memories: List[dict]
-    ) -> List[int]:
-        """
-        记忆选择模块：从所有记忆中选择与问题相关的记忆。
-
-        将所有记忆（编号）和问句传给 LLM，让 LLM 选择有用的记忆并返回编号。
-
-        Args:
-            questions: 记忆查询问句列表（1-3个）
-            memories: 所有记忆的列表，每个元素包含 id 和 content
-
-        Returns:
-            选中的记忆编号列表
         """
         ...
 
